@@ -1,32 +1,72 @@
 # CatAC Core
 
-Núcleo anticheat embebible y de bajo coste para **Minestom 1.21.11**, escrito en
-**Java 25**. Toma Mango Anti-Cheat como referencia inicial, pero reorganiza el
-proyecto como una librería configurable, extensible y con estado compartido por
-jugador.
+Embeddable anti-cheat core for **Minestom 1.21.11**, written in **Java 25**.
 
-> Estado: `1.0.0`. Núcleo estable para integración, calibración y
-> pruebas en servidores reales; no sustituye límites de red del host.
-> servidores reales; todavía no debe tratarse como una solución de autoban sin
-> telemetría propia.
+CatAC is designed as a library, not a standalone server plugin. The host application owns configuration, enforcement, persistence and integrations.
 
-## Requisitos
+## Requirements
 
-- JDK 25
-- Maven 3.9+
+- Java 25+
 - Minestom `2026.05.11-1.21.11`
+- Maven 3.9+ or Gradle
+- CatAC Core `1.0.0v`
 
-Minestom tiene alcance `provided`: el proyecto servidor debe aportar su propia
-dependencia compatible.
+Minestom is not bundled with CatAC and must be provided by the host project.
 
-## Compilar e instalar localmente
+## Installation
 
-```bash
-mvn clean verify
-mvn install
+### Gradle Kotlin DSL
+
+```kotlin
+repositories {
+    mavenCentral()
+    maven("https://jitpack.io")
+}
+
+dependencies {
+    implementation("com.github.Anyelo120:CatAC-core:1.0.0v")
+}
 ```
 
-Después puede consumirse desde otro proyecto Maven:
+### Gradle Groovy
+
+```groovy
+repositories {
+    mavenCentral()
+    maven { url = uri("https://jitpack.io") }
+}
+
+dependencies {
+    implementation "com.github.Anyelo120:CatAC-core:1.0.0v"
+}
+```
+
+### Maven
+
+```xml
+<repositories>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+</repositories>
+
+<dependencies>
+    <dependency>
+        <groupId>com.github.Anyelo120</groupId>
+        <artifactId>CatAC-core</artifactId>
+        <version>1.0.0v</version>
+    </dependency>
+</dependencies>
+```
+
+For local development:
+
+```bash
+mvn clean install
+```
+
+Then use:
 
 ```xml
 <dependency>
@@ -36,218 +76,61 @@ Después puede consumirse desde otro proyecto Maven:
 </dependency>
 ```
 
-## Integración mínima
+## Quick start
 
-Instálalo después de `MinecraftServer.init()` y antes de iniciar el servidor:
+Install CatAC after `MinecraftServer.init()` and before starting the server.
 
 ```java
 import dev.catac.CatAC;
 import dev.catac.api.EnforcementMode;
 import dev.catac.config.CatACConfig;
-import dev.catac.config.CheckPolicy;
 import net.minestom.server.MinecraftServer;
 
 MinecraftServer server = MinecraftServer.init();
 
 CatACConfig config = CatACConfig.builder()
-        .enforcementMode(EnforcementMode.SETBACK)
-        .policy("movement.speed", new CheckPolicy(
-                true, 4.0, 8.0, 24.0, 0.20, 1_000))
+        .enforcementMode(EnforcementMode.MONITOR)
         .violationHandler(event -> System.out.printf(
-                "[CatAC] %s %s buffer=%.2f action=%s evidence=%s%n",
-                event.player().getUsername(), event.check().id(),
-                event.buffer(), event.action(), event.evidence()))
+                "[CatAC] %s %s buffer=%.2f action=%s%n",
+                event.player().getUsername(),
+                event.check().id(),
+                event.buffer(),
+                event.action()))
         .build();
 
 CatAC catac = CatAC.install(config);
 
-// ...configuración del servidor...
 server.start("0.0.0.0", 25565);
 ```
 
-Conserva la instancia y llama a `catac.close()` durante un apagado controlado.
-También se emite `CatViolationEvent` en el árbol global de eventos de Minestom.
+Keep the returned instance and close it during controlled shutdown:
 
-## Seguridad del ciclo de vida
+```java
+catac.close();
+```
 
-CatAC permite una sola instancia activa por JVM/servidor Minestom. El ciclo de
-vida es `NEW → STARTED → STOPPED`; `close()` es terminal y una nueva instalación
-requiere construir otra instancia. Puedes consultar la instancia activa con
-`CatAC.current()` y el estado de una instancia con `catac.state()`.
+Only one CatAC instance may be active per JVM/Minestom server.
 
-Los checks personalizados deben implementar **exactamente una** interfaz:
-`PacketCheck` o `MovementCheck`. Si un check lanza una excepción, CatAC lo
-desactiva para esa instancia y conserva el servidor activo. La evidencia de un
-check está limitada a 512 caracteres para evitar crecimiento de memoria por
-datos externos.
+## Enforcement modes
 
-## Modos de aplicación
-
-| Modo | Comportamiento |
+| Mode | Behavior |
 |---|---|
-| `MONITOR` | Registra infracciones sin setback ni kick; los paquetes no finitos pueden desconectarse por seguridad si se mantiene la opción predeterminada. |
-| `SETBACK` | Devuelve al jugador a la última posición segura al superar el umbral correspondiente. |
-| `KICK` | Aplica setback y puede expulsar al superar `kickBuffer`, después de las advertencias configuradas para ese mismo check. |
+| `MONITOR` | Detect and emit violations without normal setback/kick enforcement. |
+| `SETBACK` | Returns the player to the last accepted safe position when configured thresholds are reached. |
+| `KICK` | Enables configured setback/kick enforcement after the required warnings and thresholds. |
 
-Conviene comenzar en `MONITOR`, observar datos reales y pasar después a
-`SETBACK`. El modo `KICK` requiere umbrales calibrados para cada servidor.
+Start production calibration in `MONITOR`.
 
-## Avisos tranquilos y control de kick
+## Configuration
 
-Las anomalías normales no expulsan de inmediato: por defecto CatAC requiere dos
-avisos de ese mismo check, separados por cuatro segundos como mínimo. Los
-paquetes malformados (NaN, infinito o coordenadas fuera de rango) se mantienen
-como excepción de seguridad y pueden desconectarse inmediatamente.
-
-Los textos y la cantidad de avisos se cambian enteramente desde la API. El
-proveedor recibe el check, buffer, severidad y número de aviso; devolver `null`
-silencia sólo ese caso.
+Example:
 
 ```java
 CatACConfig config = CatACConfig.builder()
-        .enforcementMode(EnforcementMode.KICK)
-        .warningsBeforeKick(3)
-        .playerNoticeCooldown(Duration.ofSeconds(6))
-        .playerMessageProvider(notice -> switch (notice.type()) {
-            case WARNING -> Component.text("Movimiento inusual detectado. Por favor, juega normalmente.");
-            case SETBACK -> Component.text("Tu posición fue corregida para mantener una partida justa.");
-        })
-        .kickMessage(Component.text("No pudimos validar varias acciones de tu cliente."))
-        .build();
-```
-
-Esto no envía una línea por paquete: el cooldown del jugador es independiente
-del cooldown de alertas de moderación y el contador se guarda por check. Por
-ejemplo, un aviso de inventario nunca habilita un kick por movimiento.
-
-## Señuelo privado de KillAura
-
-Tras una anomalía de `combat.reach`, CatAC puede enviar por paquetes un jugador
-señuelo exclusivamente al sospechoso: no se añade a la instancia, no es visible
-para otros jugadores y se elimina en menos de un segundo. Sólo confirma
-`combat.aura-decoy` si el cliente ataca el ID exacto del señuelo después del
-tiempo de armado mientras dicho objetivo sigue detrás de su cámara. En modo
-`KICK` la confirmación expulsa al jugador; en `MONITOR` y `SETBACK` genera una
-alerta de alta confianza sin expulsar.
-
-No se considera una certeza matemática: latencia extrema, modificaciones de
-cliente y futuras variaciones de protocolo deben probarse antes de endurecer
-producción. La combinación de ID privado, armado, distancia fuera de alcance
-vanilla y orientación trasera evita que un ataque normal pueda confirmarlo.
-
-```java
-import dev.catac.config.AuraDecoyPolicy;
-
-CatACConfig.builder()
-        .auraDecoyPolicy(new AuraDecoyPolicy(
-                true,
-                1.5,                       // severidad mínima de reach para desplegar
-                Duration.ofSeconds(12),     // cooldown por jugador
-                Duration.ofMillis(175),     // espera a que llegue el spawn
-                Duration.ofMillis(650),     // vida total del señuelo
-                3.75,                       // detrás; fuera de alcance vanilla
-                -0.35,                      // el jugador aún mira hacia delante
-                Component.text("Se detectó ataque automatizado.")))
-        .build();
-```
-
-Usa `AuraDecoyPolicy.disabled()` para desactivarlo por completo. La política se
-valida al construir la configuración; no se aceptan distancias que un jugador
-legítimo pueda golpear desde quieto.
-
-## Protección de daño de combate
-
-Cuando CatAC cancela un ataque de entidad (por ejemplo, alcance inválido), arma
-una protección de un solo uso sobre la víctima exacta. Si Minestom recibe el
-`EntityDamageEvent` correspondiente dentro de 500 ms, el daño se cancela antes
-de modificar la vida de la víctima. Esto impide que una acción detectada como
-trampa afecte a otros jugadores incluso si otra mecánica del servidor intentó
-producir daño desde el mismo ataque.
-
-El host conserva la decisión final y puede aplicar la misma protección desde
-un check propio:
-
-```java
-import dev.catac.api.DamageDecision;
-import dev.catac.config.DamageProtectionPolicy;
-
-CatACConfig config = CatACConfig.builder()
-        .damageProtectionPolicy(new DamageProtectionPolicy(
-                true,
-                Duration.ofMillis(500),
-                context -> context.reason().startsWith("combat.")
-                        ? DamageDecision.DENY
-                        : DamageDecision.ALLOW))
-        .build();
-
-// Desde un check o una integración que ya invalidó el ataque:
-catac.denyDamage(attacker, victim, Duration.ofMillis(300), "custom.invalid-hit");
-```
-
-La ventana está ligada al UUID de la víctima y se consume tras el primer evento,
-por lo que no bloquea daño posterior ni daño a otras entidades. Para desactivar
-esta capa usa `DamageProtectionPolicy.disabled()`.
-
-## Defensa contra inundación de paquetes
-
-CatAC usa `PlayerPacketEvent`, que Minestom emite antes de ejecutar el listener
-vanilla del paquete. Por ello un paquete que supera su presupuesto se cancela
-antes de modificar mundo, inventario, combate o lógica de plugins. Cada jugador
-tiene dos token buckets acotados: 160 paquetes/s con ráfaga de 240 y, aparte,
-24 paquetes costosos/s con ráfaga de 40. Los primeros excesos se descartan; ocho
-excesos dentro de tres segundos expulsan al atacante.
-
-Los paquetes desconocidos o custom se tratan como `NORMAL`, por lo que CatAC no
-supone que una mecánica propia sea hostil. Clasifica sólo aquellos paquetes que
-tu servidor sepa costosos:
-
-```java
-import dev.catac.api.PacketCost;
-import dev.catac.config.PacketBudget;
-import dev.catac.config.PacketFloodPolicy;
-
-CatACConfig config = CatACConfig.builder()
-        .packetFloodPolicy(new PacketFloodPolicy(
-                true,
-                new PacketBudget(180, 270),
-                new PacketBudget(30, 50),
-                8,
-                Duration.ofSeconds(3),
-                (player, packet) -> packet instanceof MyLargeCustomPacket
-                        ? PacketCost.HEAVY : PacketCost.NORMAL,
-                event -> logger.warning("Flood: " + event.packetType().getSimpleName()),
-                Component.text("Demasiados paquetes recibidos.")))
-        .build();
-```
-
-`CatAC.metrics()` expone `floodDrops` y `floodKicks`; también se publica
-`PacketFloodEvent`. CatAC no reemplaza el decodificador ni la cola interna de
-Minestom: para paquetes malformados, compresión y ancho de banda previos a la
-decodificación, el host debe conservar límites de proxy/firewall y los límites
-de conexión de Minestom.
-
-## Checks incluidos
-
-| ID | Área | Idea principal |
-|---|---|---|
-| `packet.invalid-movement` | Paquetes | Rechaza NaN, infinito, coordenadas inseguras y pitch imposible. |
-| `packet.timer` | Paquetes | Balance temporal con tolerancia a ráfagas y lag del servidor. |
-| `movement.speed` | Movimiento | Límite horizontal según atributo, inercia, superficie y latencia. |
-| `movement.vertical` | Movimiento | Predicción de gravedad y detección de vuelo estacionario. |
-| `movement.ground-spoof` | Movimiento | Contrasta el bit de suelo del cliente con colisiones reales. |
-| `movement.phase` | Movimiento | Detecta movimiento dentro de formas de colisión sólidas. |
-| `combat.reach` | Combate | Distancia ojo-AABB con historial y rewind por latencia. |
-| `world.fast-break` | Mundo | Usa el cálculo real de rotura de Minestom, herramienta y latencia. |
-
-## Ajustes más importantes
-
-```java
-CatACConfig config = CatACConfig.builder()
+        .enforcementMode(EnforcementMode.SETBACK)
         .joinGrace(Duration.ofSeconds(2))
         .teleportGrace(Duration.ofMillis(400))
         .velocityGrace(Duration.ofMillis(900))
-        .networkProbeInterval(Duration.ofSeconds(1))
-        .networkAcknowledgementTimeout(Duration.ofSeconds(3))
         .lagCompensationThresholdMillis(85.0)
         .disableCheck("movement.vertical")
         .exemptionProvider((player, checkId) ->
@@ -255,106 +138,61 @@ CatACConfig config = CatACConfig.builder()
         .build();
 ```
 
-Cada `CheckPolicy` contiene, en orden: activación, buffer de alerta, buffer de
-setback, buffer de kick, decaimiento por pase y cooldown de alertas en
-milisegundos. También puede concederse una exención temporal:
+Temporary exemption:
 
 ```java
 catac.exempt(player, Duration.ofSeconds(2));
 ```
 
-## Sincronización de red
-
-CatAC envía un `PingPacket` ligero cada segundo por defecto y consume el
-`ClientPongPacket` correspondiente. Con ello mantiene RTT y jitter suavizados,
-sin usar tareas por jugador ni colecciones crecientes. Tras una velocidad,
-CatAC programa un ping al final del tick para saber cuándo el cliente ya recibió
-el impulso; los movimientos permanecen temporalmente fuera de los checks
-predictivos hasta el `Pong` o el timeout. Los teletransportes se vinculan al ID
-de confirmación nativo de Minestom.
-
-La información está disponible para integraciones, telemetría y futuros checks:
+Network state:
 
 ```java
-catac.networkSnapshot(player).ifPresent(network ->
-        System.out.printf("rtt=%.1fms jitter=%.1fms teleport=%s velocity=%d%n",
-                network.roundTripMillis(), network.jitterMillis(),
-                network.teleportPending(), network.pendingVelocities()));
+catac.networkSnapshot(player).ifPresent(network -> {
+    System.out.println("RTT: " + network.roundTripMillis());
+    System.out.println("Jitter: " + network.jitterMillis());
+});
 ```
 
-`networkAcknowledgementTimeout` es un límite de seguridad: al vencer, CatAC
-vuelve a evaluar movimiento en vez de bloquear el estado indefinidamente.
-
-## Mundo, inventario y telemetría
-
-`world.interaction` valida alcance de bloques y coordenadas de cursor de
-placement antes de que Minestom procese la interacción. `inventory.invalid-click`
-rechaza referencias de ventana, slot y hotbar imposibles; CatAC no reimplementa
-la lógica normal de clics de Minestom. `inventory.move` es una señal de
-telemetría, sin cancelación automática.
-
-Las métricas acumuladas no conservan paquetes ni datos sensibles y permiten
-calibrar por servidor:
+Metrics:
 
 ```java
 var metrics = catac.metrics();
-System.out.printf("samples=%d alerts=%d cancelled=%d kicks=%d%n",
-        metrics.violationSamples(), metrics.alerts(),
-        metrics.cancelledPackets(), metrics.kicks());
+
+System.out.printf(
+        "samples=%d alerts=%d cancelled=%d kicks=%d%n",
+        metrics.violationSamples(),
+        metrics.alerts(),
+        metrics.cancelledPackets(),
+        metrics.kicks());
 ```
 
-Puedes desactivarlas con `.telemetryEnabled(false)` si no se usarán.
+## Included checks
 
-## Replay y calibración
+| ID | Area |
+|---|---|
+| `packet.invalid-movement` | Invalid movement packets |
+| `packet.timer` | Packet timing / timer |
+| `movement.speed` | Horizontal movement |
+| `movement.vertical` | Vertical prediction |
+| `movement.ground-spoof` | Client ground-state spoofing |
+| `movement.phase` | Solid collision / phase |
+| `combat.reach` | Reach with latency rewind |
+| `world.fast-break` | Block-breaking timing |
 
-El paquete `dev.catac.testing` ofrece `ReplayRunner`, `PacketFuzzer`,
-`HotPathBenchmark` y `CalibrationAnalyzer`. Son herramientas offline y
-reproducibles: no capturan tráfico ni se ejecutan en el hilo del servidor. Lee
-[la guía de calibración](docs/CALIBRATION.md) antes de convertir alertas en
-setbacks o kicks.
+CatAC also includes validation and protection layers for world interaction, inventory input, combat damage and packet flooding.
 
-## Predictor de movimiento
+## Custom checks
 
-Las comprobaciones de movimiento comparten un modelo por jugador que conserva
-inercia horizontal, gravedad y drag vertical entre muestras. Usa el atributo de
-velocidad, fricción y factor de superficie, estado de sneak y salto con
-`JUMP_BOOST`; las sondas de red aportan una tolerancia pequeña y acotada.
+Implement exactly one check interface:
 
-El análisis de colisiones revisa el destino y barre la AABB cada 0,20 bloques
-(máximo 32 subpasos). Así un paquete que intente atravesar una pared no queda
-oculto sólo porque acaba al otro lado. Si el recorrido cruza un chunk sin cargar,
-la muestra se marca incompleta y los checks se abstienen.
+- `PacketCheck`
+- `MovementCheck`
 
-## Combate y rewind
-
-Cada entidad con instancia mantiene un historial circular de 32 posiciones,
-actualizado durante su tick y liberado al despawnear. Al atacar, CatAC calcula
-el instante que probablemente vio el atacante: `padding + RTT/2 + jitter`, con
-un máximo configurable de 350 ms. La posición objetivo se interpola para ese
-instante; CatAC no busca la posición más cercana dentro de una ventana, porque
-eso equivaldría a regalar alcance.
-
-`combat.reach` valida distancia ojo-AABB, que el objetivo esté delante de la
-vista y la línea de visión contra formas de colisión. Un chunk ausente hace que
-la comprobación de visión se abstenga. Ajustes disponibles:
-
-```java
-CatACConfig.builder()
-        .combatRewindPadding(Duration.ofMillis(50))
-        .combatMaxRewind(Duration.ofMillis(350))
-        .build();
-```
-
-Las exenciones físicas integradas cubren estados donde una predicción simple no
-es fiable, como vehículos, vuelo, élitros, riptide, levitación, caída lenta,
-gracia del delfín, líquidos, escaleras, telarañas y chunks incompletos. Las
-interacciones con bloques se abstienen si el chunk no está cargado y el combate
-no castiga una dirección de cámara posiblemente desfasada durante un tick.
-
-## Crear un check propio
+Example:
 
 ```java
 public final class LargeStepCheck implements MovementCheck {
+
     private static final CheckDescriptor INFO = new CheckDescriptor(
             "custom.large-step",
             "Large vertical step",
@@ -377,7 +215,7 @@ public final class LargeStepCheck implements MovementCheck {
 }
 ```
 
-Registro:
+Register it during construction:
 
 ```java
 CatAC catac = CatAC.builder()
@@ -387,33 +225,70 @@ CatAC catac = CatAC.builder()
         .start();
 ```
 
-Consulta [la guía de desarrollo](docs/DEVELOPER_GUIDE.md) y
-[la arquitectura](docs/ARCHITECTURE.md) antes de crear checks que trabajen en el
-hot path.
+CatAC disables a custom check for the current instance if that check throws an exception, keeping the host server alive.
 
-## Principios del núcleo
+## Events and API
 
-- Un único `EventNode` y una pasada compartida de colisiones por movimiento.
-- Estructuras primitivas o preasignadas en el camino caliente.
-- `System.nanoTime()` para tiempos monotónicos.
-- Historial circular acotado, sin crecimiento por jugador.
-- Sincronización Ping/Pong, teletransporte y velocidades con colas fijas.
-- Predicción física por tick y barrido AABB acotado para movimiento.
-- Rewind interpolado y validación de alcance, dirección y línea de visión.
-- Validación de mundo/inventario y métricas de enforcement sin payloads.
-- Replay determinista, fuzzing reproducible, benchmark y calibración offline.
-- Umbrales con buffer y decaimiento para evitar castigos por una sola muestra.
-- Setback sólo hacia una posición previamente considerada segura.
-- Compensación de lag global y tolerancias acotadas por latencia.
+Useful integration points include:
 
-## Límites de esta versión
+- `CatViolationEvent`
+- `PacketFloodEvent`
+- `CatAC.metrics()`
+- `CatAC.networkSnapshot(player)`
+- `CatAC.exempt(player, duration)`
+- `CatAC.denyDamage(...)`
+- `CatAC.current()`
+- `catac.state()`
 
-El núcleo aún necesita pruebas de integración con clientes reales, perfiles por
-versión/protocolo, reproducción determinista de trazas y más checks de combate.
-No contiene autoban persistente ni almacenamiento de sanciones. Estas decisiones
-se dejan fuera de la librería para que el servidor anfitrión conserve el control.
+Violation evidence is bounded to avoid unbounded memory growth.
 
-## Licencia y procedencia
+## Architecture
 
-MIT. Consulta `LICENSE` y `NOTICE`. La reescritura mantiene la atribución del
-proyecto Mango Anti-Cheat que sirvió como referencia.
+The core is optimized for the Minestom hot path:
+
+- Shared movement/collision processing.
+- Bounded per-player state.
+- Circular entity history for combat rewind.
+- Ping/Pong based RTT and jitter tracking.
+- Velocity and teleport acknowledgement tracking.
+- Deterministic replay/fuzzing/calibration utilities.
+- No persistent punishment storage.
+- No host-wide firewall/proxy replacement.
+
+See:
+
+- [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md)
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/CALIBRATION.md`](docs/CALIBRATION.md)
+
+## Production notes
+
+CatAC is an anti-cheat core, not an automatic punishment system.
+
+Before enabling aggressive enforcement:
+
+1. Run in `MONITOR`.
+2. Collect real server telemetry.
+3. Calibrate thresholds for your mechanics and latency profile.
+4. Enable `SETBACK`.
+5. Enable `KICK` only for sufficiently validated checks.
+
+The host remains responsible for persistent bans, moderation policy, proxy/firewall limits and protocol-level protections outside Minestom's decoded packet pipeline.
+
+## Build
+
+```bash
+mvn clean verify
+```
+
+Install locally:
+
+```bash
+mvn install
+```
+
+## License
+
+MIT. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
+CatAC Core retains attribution to Mango Anti-Cheat as the original reference used during the rewrite.
