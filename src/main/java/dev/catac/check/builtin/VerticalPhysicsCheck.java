@@ -9,17 +9,18 @@ import dev.catac.internal.MovementExemptions;
 import dev.catac.state.CollisionSnapshot;
 import dev.catac.state.MovementFrame;
 import dev.catac.state.PlayerData;
+
 import net.minestom.server.entity.Player;
 import net.minestom.server.potion.PotionEffect;
 
 public final class VerticalPhysicsCheck implements MovementCheck {
-    private static final CheckDescriptor DESCRIPTOR = new CheckDescriptor(
-            "movement.vertical",
-            "Vertical physics",
-            CheckCategory.MOVEMENT,
-            new CheckPolicy(true, 4, 8, 24, 0.18, 1_000),
-            true
-    );
+    private static final CheckDescriptor DESCRIPTOR =
+            new CheckDescriptor(
+                    "movement.vertical",
+                    "Vertical physics",
+                    CheckCategory.MOVEMENT,
+                    new CheckPolicy(true, 4, 8, 24, 0.18, 1_000),
+                    true);
 
     @Override
     public CheckDescriptor descriptor() {
@@ -30,12 +31,10 @@ public final class VerticalPhysicsCheck implements MovementCheck {
     public CheckResult evaluate(MovementFrame frame, PlayerData data) {
         Player player = frame.player();
         CollisionSnapshot collision = frame.collision();
-        if (MovementExemptions.physicalBypass(player, collision) || collision.insideSolid() ||
-                player.hasEffect(PotionEffect.LEVITATION) || player.hasEffect(PotionEffect.SLOW_FALLING) ||
-                player.hasEffect(PotionEffect.JUMP_BOOST)) {
-            return CheckResult.pass();
+        if (MovementExemptions.physicalBypass(player, collision) || collision.insideSolid()) {
+            return CheckResult.uncertain(dev.catac.check.SkipReason.UNMODELED);
         }
-        if (collision.supported() || data.airFrames() < 2 || !data.prediction().initialized()) {
+        if (collision.supported() && frame.deltaY() <= data.prediction().verticalUpperBound()) {
             return CheckResult.pass();
         }
 
@@ -46,11 +45,15 @@ public final class VerticalPhysicsCheck implements MovementCheck {
         if (actual > predicted) {
             double excess = actual - predicted;
             double severity = Math.min(8.0, 0.75 + excess * 12.0);
-            return CheckResult.fail(severity,
-                    "vertical=" + round(actual) + " upper=" + round(predicted));
+            return CheckResult.fail(
+                    severity, "vertical=" + round(actual) + " upper=" + round(predicted));
         }
 
-        if (data.airFrames() > 7 && Math.abs(actual) < 0.003 && Math.abs(previous) < 0.02) {
+        if (!player.hasNoGravity()
+                && !player.hasEffect(PotionEffect.LEVITATION)
+                && data.airFrames() > 7
+                && Math.abs(actual) < 0.003
+                && Math.abs(previous) < 0.02) {
             return CheckResult.fail(1.0, "sustained near-zero vertical motion while airborne");
         }
         return CheckResult.pass();

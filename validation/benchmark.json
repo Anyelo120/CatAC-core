@@ -1,0 +1,10 @@
+{
+  "scope": "single player; native listeners; in-memory transport; flat floor",
+  "warmup": 500,
+  "samples": 3000,
+  "meanNanos": 17735,
+  "p50Nanos": 13560,
+  "p95Nanos": 38768,
+  "p99Nanos": 76656,
+  "maxNanos": 264508
+}

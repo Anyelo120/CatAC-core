@@ -1,24 +1,25 @@
 package dev.catac.engine;
 
-import dev.catac.api.CatViolationEvent;
-import dev.catac.api.CheckDescriptor;
-import dev.catac.api.EnforcementMode;
-import dev.catac.api.PlayerNotice;
-import dev.catac.api.PlayerNoticeType;
-import dev.catac.api.ViolationAction;
+import dev.catac.api.*;
 import dev.catac.check.CheckResult;
 import dev.catac.config.CatACConfig;
 import dev.catac.config.CheckPolicy;
 import dev.catac.internal.EnforcementDecision;
 import dev.catac.state.PlayerData;
 import dev.catac.state.ViolationState;
+
+import net.kyori.adventure.text.Component;
 import net.minestom.server.MinecraftServer;
 
 import java.util.concurrent.TimeUnit;
-import net.kyori.adventure.text.Component;
 
 public final class EnforcementEngine {
-    private static final System.Logger LOGGER = System.getLogger(EnforcementEngine.class.getName());
+    private final dev.catac.internal.CallbackFaults callbackFaults =
+            new dev.catac.internal.CallbackFaults();
+
+    public long callbackFaults() {
+        return callbackFaults.count();
+    }
 
     private final CatACConfig config;
     private final EnforcementMetrics metrics = new EnforcementMetrics();
@@ -27,116 +28,134 @@ public final class EnforcementEngine {
         this.config = config;
     }
 
-    public EnforcementDecision handle(PlayerData data, int slot, CheckDescriptor descriptor,
-                                      CheckPolicy policy, CheckResult result, long nowNanos) {
+    public EnforcementDecision handle(
+            PlayerData data,
+            int slot,
+            CheckDescriptor descriptor,
+            CheckPolicy policy,
+            CheckResult result,
+            long now) {
         ViolationState state = data.violation(slot);
-        if (result.passed()) {
-            state.decay(policy.decayPerPass());
+        state.advance(now, policy.decayPerSecond(), config.incidentWindowNanos());
+        if (!result.failed()) {
+            if (result.cancelImmediately() && descriptor.capabilities().cancelAction())
+                return new EnforcementDecision(true, false, false, ViolationAction.CANCEL_PACKET);
             return EnforcementDecision.NONE;
         }
-
-        if (config.telemetryEnabled()) {
-            metrics.violationSample();
-        }
-
-        double buffer = state.add(result.severity());
-        boolean malformedDisconnect = result.disconnectRecommended() && config.disconnectMalformedPackets();
-        boolean enforcementEnabled = config.enforcementMode() != EnforcementMode.MONITOR;
-
-        ViolationAction action = ViolationAction.ALERT;
-        boolean cancel = false;
-        boolean setback = false;
-        boolean kick = false;
-
-        if (malformedDisconnect) {
-            action = ViolationAction.KICK;
-            cancel = true;
-            kick = true;
-        } else if (enforcementEnabled && config.enforcementMode() == EnforcementMode.KICK &&
-                buffer >= policy.kickBuffer() && state.playerWarnings() >= config.warningsBeforeKick()) {
-            action = ViolationAction.KICK;
-            cancel = true;
-            kick = true;
-        } else if (enforcementEnabled && descriptor.setbackEligible() && buffer >= policy.setbackBuffer()) {
-            action = ViolationAction.SETBACK;
-            cancel = true;
-            setback = true;
-        } else if (enforcementEnabled && result.cancelImmediately()) {
-            action = ViolationAction.CANCEL_PACKET;
-            cancel = true;
-        }
-
-        boolean reachedAlertThreshold = buffer >= policy.alertBuffer();
-        long cooldownNanos = TimeUnit.MILLISECONDS.toNanos(policy.alertCooldownMillis());
-        boolean shouldNotify = kick || (reachedAlertThreshold && state.canAlert(nowNanos, cooldownNanos));
-        if (shouldNotify) {
-            if (config.telemetryEnabled()) {
-                metrics.alert();
-            }
-            CatViolationEvent event = new CatViolationEvent(
-                    data.player(), descriptor, result.severity(), buffer, result.evidence(), action);
+        if (config.telemetryEnabled()) metrics.violationSample();
+        double buffer = state.add(result.severity(), now);
+        var caps = descriptor.capabilities();
+        EnforcementMode mode = config.modeFor(descriptor.id());
+        if (data.clientProfile() != ClientProfile.JAVA_1_21_11 && !caps.hardening())
+            mode = EnforcementMode.MONITOR;
+        boolean enforcing = mode != EnforcementMode.MONITOR;
+        boolean malformed = result.outcome() == CheckResult.Outcome.MALFORMED && caps.hardening();
+        boolean kick =
+                malformed
+                        && result.disconnectRecommended()
+                        && config.disconnectMalformedPackets()
+                        && caps.kick();
+        if (!kick
+                && enforcing
+                && mode == EnforcementMode.KICK
+                && caps.kick()
+                && buffer >= policy.kickBuffer()
+                && state.totalDetections() >= config.minimumDetectionsBeforeKick()
+                && state.playerWarnings() >= config.warningsBeforeKick()) kick = true;
+        boolean setback =
+                !kick
+                        && enforcing
+                        && caps.correctMovement()
+                        && buffer >= policy.setbackBuffer()
+                        && data.hasSafePosition();
+        boolean cancel =
+                kick
+                        || setback
+                        || (malformed && caps.cancelAction())
+                        || (enforcing && caps.cancelAction() && result.cancelImmediately());
+        ViolationAction action =
+                kick
+                        ? ViolationAction.KICK
+                        : setback
+                                ? ViolationAction.SETBACK
+                                : cancel ? ViolationAction.CANCEL_PACKET : ViolationAction.ALERT;
+        boolean alert = buffer >= policy.alertBuffer();
+        if (kick
+                || (alert
+                        && state.canAlert(
+                                now,
+                                TimeUnit.MILLISECONDS.toNanos(policy.alertCooldownMillis())))) {
+            if (config.telemetryEnabled()) metrics.alert();
+            CatViolationEvent event =
+                    new CatViolationEvent(
+                            data.player(),
+                            descriptor,
+                            result.severity(),
+                            buffer,
+                            result.evidence(),
+                            action,
+                            result.details());
             try {
                 MinecraftServer.getGlobalEventHandler().call(event);
-            } catch (RuntimeException exception) {
-                LOGGER.log(System.Logger.Level.ERROR, "CatAC violation event listener failed", exception);
+            } catch (RuntimeException ex) {
+                callbackFaults.report(
+                        dev.catac.internal.CallbackFaults.Kind.VIOLATION_EVENT, now, ex);
             }
             try {
                 config.violationHandler().onViolation(event);
-            } catch (RuntimeException exception) {
-                LOGGER.log(System.Logger.Level.ERROR, "CatAC violation handler failed", exception);
-            }
-            if (config.debug()) {
-                LOGGER.log(System.Logger.Level.DEBUG,
-                        descriptor.id() + " player=" + data.player().getUsername() +
-                                " buffer=" + buffer + " evidence=" + result.evidence());
+            } catch (RuntimeException ex) {
+                callbackFaults.report(
+                        dev.catac.internal.CallbackFaults.Kind.VIOLATION_HANDLER, now, ex);
             }
         }
-
-        // Invalid protocol data is disconnected immediately. All normal checks
-        // are deliberately warned and rate-limited before they can kick.
-        if (!kick && reachedAlertThreshold && state.canNotifyPlayer(nowNanos, config.playerNoticeCooldownNanos())) {
-            PlayerNoticeType type = setback ? PlayerNoticeType.SETBACK : PlayerNoticeType.WARNING;
-            PlayerNotice notice = new PlayerNotice(data.player(), descriptor, type, result.severity(), buffer,
-                    state.playerWarnings());
+        if (enforcing
+                && !kick
+                && caps.cancelAction()
+                && alert
+                && state.canNotifyPlayer(now, config.playerNoticeCooldownNanos())) {
             try {
-                Component message = config.playerMessageProvider().message(notice);
+                Component message =
+                        config.playerMessageProvider()
+                                .message(
+                                        new PlayerNotice(
+                                                data.player(),
+                                                descriptor,
+                                                setback
+                                                        ? PlayerNoticeType.SETBACK
+                                                        : PlayerNoticeType.WARNING,
+                                                result.severity(),
+                                                buffer,
+                                                state.playerWarnings() + 1));
                 if (message != null) {
                     data.player().sendMessage(message);
+                    state.warningSent();
                 }
-            } catch (RuntimeException exception) {
-                LOGGER.log(System.Logger.Level.ERROR, "CatAC player message provider failed", exception);
+            } catch (RuntimeException ex) {
+                callbackFaults.report(
+                        dev.catac.internal.CallbackFaults.Kind.PLAYER_NOTICE, now, ex);
             }
         }
-
-        if (config.telemetryEnabled()) {
-            metrics.decision(cancel, setback, kick);
-        }
-
+        if (data.traces().enabled())
+            data.traces()
+                    .add(
+                            new DetectionTrace(
+                                    data.movementSequence(),
+                                    now,
+                                    descriptor.id(),
+                                    result.outcome(),
+                                    result.severity(),
+                                    buffer,
+                                    result.details(),
+                                    action));
         return new EnforcementDecision(cancel, setback, kick, action);
     }
 
-    EnforcementMetrics metrics() { return metrics; }
+    /** Call only after applying the action successfully. */
+    public void applied(boolean cancel, boolean setback, boolean kick) {
+        if (config.telemetryEnabled()) metrics.decision(cancel, setback, kick);
+    }
 
-    /** Records a fully armed private-decoy hit; the global mode still governs kick. */
-    public boolean handleAuraConfirmation(PlayerData data, CheckDescriptor descriptor, String evidence) {
-        boolean kick = config.enforcementMode() == EnforcementMode.KICK;
-        ViolationAction action = kick ? ViolationAction.KICK : ViolationAction.ALERT;
-        if (config.telemetryEnabled()) {
-            metrics.violationSample();
-            metrics.alert();
-            metrics.decision(kick, false, kick);
-        }
-        CatViolationEvent event = new CatViolationEvent(data.player(), descriptor, 10.0, 10.0, evidence, action);
-        try {
-            MinecraftServer.getGlobalEventHandler().call(event);
-        } catch (RuntimeException exception) {
-            LOGGER.log(System.Logger.Level.ERROR, "CatAC violation event listener failed", exception);
-        }
-        try {
-            config.violationHandler().onViolation(event);
-        } catch (RuntimeException exception) {
-            LOGGER.log(System.Logger.Level.ERROR, "CatAC violation handler failed", exception);
-        }
-        return kick;
+    EnforcementMetrics metrics() {
+        return metrics;
     }
 }

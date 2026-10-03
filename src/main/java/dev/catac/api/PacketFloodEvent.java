@@ -7,12 +7,8 @@ import java.util.Objects;
 
 /** Published only when CatAC has dropped or disconnected a packet flood. */
 public record PacketFloodEvent(
-        Player player,
-        Class<?> packetType,
-        PacketCost cost,
-        int strikes,
-        FloodAction action
-) implements Event {
+        Player player, Class<?> packetType, PacketCost cost, int strikes, FloodAction action)
+        implements Event {
     public PacketFloodEvent {
         Objects.requireNonNull(player, "player");
         Objects.requireNonNull(packetType, "packetType");

@@ -1,521 +1,749 @@
 package dev.catac.engine;
 
-import dev.catac.check.CatCheck;
-import dev.catac.check.CheckResult;
-import dev.catac.api.NetworkSnapshot;
-import dev.catac.api.CatACMetrics;
-import dev.catac.api.CheckDescriptor;
-import dev.catac.api.DamageContext;
-import dev.catac.api.DamageDecision;
-import dev.catac.api.PacketCost;
-import dev.catac.api.PacketFloodEvent;
-import dev.catac.api.FloodAction;
-import dev.catac.check.builtin.FastBreakCheck;
-import dev.catac.check.builtin.GroundSpoofCheck;
-import dev.catac.check.builtin.HorizontalSpeedCheck;
-import dev.catac.check.builtin.InvalidMovementPacketCheck;
-import dev.catac.check.builtin.InventoryMoveCheck;
-import dev.catac.check.builtin.InventorySanityCheck;
-import dev.catac.check.builtin.MovementPacketRateCheck;
-import dev.catac.check.builtin.PhaseCheck;
-import dev.catac.check.builtin.ReachCheck;
-import dev.catac.check.builtin.VerticalPhysicsCheck;
-import dev.catac.check.builtin.WorldInteractionCheck;
+import dev.catac.api.*;
+import dev.catac.check.*;
+import dev.catac.check.builtin.*;
 import dev.catac.config.CatACConfig;
-import dev.catac.internal.CheckRegistry;
-import dev.catac.internal.AuraDecoyManager;
-import dev.catac.internal.CollisionAnalyzer;
-import dev.catac.internal.EntityHistoryManager;
-import dev.catac.internal.EnforcementDecision;
-import dev.catac.internal.RegisteredMovementCheck;
-import dev.catac.internal.RegisteredPacketCheck;
-import dev.catac.internal.TickHealth;
-import dev.catac.state.CollisionSnapshot;
-import dev.catac.state.MovementFrame;
-import dev.catac.state.PlayerData;
+import dev.catac.internal.*;
+import dev.catac.state.*;
+
 import net.minestom.server.MinecraftServer;
-import net.minestom.server.entity.Player;
-import net.minestom.server.entity.GameMode;
-import net.minestom.server.entity.Entity;
-import net.minestom.server.entity.LivingEntity;
-import net.minestom.server.event.Event;
-import net.minestom.server.event.EventNode;
-import net.minestom.server.event.entity.EntityTeleportEvent;
-import net.minestom.server.event.entity.EntityVelocityEvent;
-import net.minestom.server.event.entity.EntityDamageEvent;
-import net.minestom.server.event.entity.EntityDespawnEvent;
-import net.minestom.server.event.entity.EntitySpawnEvent;
-import net.minestom.server.event.entity.EntityTickEvent;
-import net.minestom.server.event.player.PlayerDisconnectEvent;
-import net.minestom.server.event.player.PlayerMoveEvent;
-import net.minestom.server.event.player.PlayerPacketEvent;
-import net.minestom.server.event.player.PlayerSpawnEvent;
+import net.minestom.server.entity.*;
+import net.minestom.server.event.*;
+import net.minestom.server.event.entity.*;
+import net.minestom.server.event.player.*;
 import net.minestom.server.event.server.ServerTickMonitorEvent;
 import net.minestom.server.network.packet.client.common.ClientPongPacket;
-import net.minestom.server.network.packet.client.play.ClientTeleportConfirmPacket;
-import net.minestom.server.network.packet.client.play.ClientInteractEntityPacket;
+import net.minestom.server.network.packet.client.play.*;
+import net.minestom.server.network.packet.server.play.EntityVelocityPacket;
+import net.minestom.server.network.packet.server.play.PlayerPositionAndLookPacket;
 
 import java.time.Duration;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/** Every mutable player component is serialized on that PlayerData's monitor. */
 public final class CatEngine {
-    private static final String INVALID_MOVEMENT_ID = "packet.invalid-movement";
-    private static final String COMBAT_REACH_ID = "combat.reach";
-    private static final CheckDescriptor AURA_DECOY_DESCRIPTOR = new CheckDescriptor(
-            "combat.aura-decoy", "Aura decoy", dev.catac.api.CheckCategory.COMBAT,
-            new dev.catac.config.CheckPolicy(true, 1, 1, 1, 0, 1_000), false);
     private static final System.Logger LOGGER = System.getLogger(CatEngine.class.getName());
-
     private final CatACConfig config;
     private final TickHealth tickHealth;
     private final CheckRegistry registry;
-    private final PlayerDataManager playerDataManager;
+    private final PlayerDataManager players;
     private final EnforcementEngine enforcement;
-    private final EntityHistoryManager entityHistories = new EntityHistoryManager();
-    private final CollisionAnalyzer collisionAnalyzer = new CollisionAnalyzer();
-    private final AuraDecoyManager auraDecoys = new AuraDecoyManager();
+    private final EntityHistoryManager histories = new EntityHistoryManager();
+    private final CollisionAnalyzer collisions = new CollisionAnalyzer();
+    private final AuraDecoyManager decoys = new AuraDecoyManager();
     private final List<RegisteredPacketCheck> packetChecks;
     private final List<RegisteredMovementCheck> movementChecks;
-    private final EventNode<Event> eventNode = EventNode.all("catac-core");
-    private final AtomicBoolean exemptionProviderAvailable = new AtomicBoolean(true);
-    private final AtomicBoolean damageDecisionProviderAvailable = new AtomicBoolean(true);
-    private final AtomicBoolean packetCostClassifierAvailable = new AtomicBoolean(true);
-    private final AtomicBoolean packetFloodHandlerAvailable = new AtomicBoolean(true);
+    private final EventNode<Event> node = EventNode.all("catac-core");
+    private final CallbackFaults callbackFaults = new CallbackFaults();
+    private final AtomicBoolean exemptionProviderHealthy = new AtomicBoolean(true),
+            classifierHealthy = new AtomicBoolean(true),
+            floodHandlerHealthy = new AtomicBoolean(true),
+            damageProviderHealthy = new AtomicBoolean(true);
 
     public CatEngine(CatACConfig config, List<CatCheck> additionalChecks) {
-        this.config = Objects.requireNonNull(config, "config");
-        this.tickHealth = new TickHealth(config.lagCompensationThresholdMillis());
-        this.registry = new CheckRegistry(config);
-        this.playerDataManager = new PlayerDataManager(registry::size, config);
-        this.enforcement = new EnforcementEngine(config);
-
+        this.config = Objects.requireNonNull(config);
+        tickHealth = new TickHealth(config.lagCompensationThresholdMillis());
+        registry = new CheckRegistry(config);
+        players = new PlayerDataManager(registry::size, config);
+        enforcement = new EnforcementEngine(config);
         registry.register(new InvalidMovementPacketCheck());
         registry.register(new MovementPacketRateCheck(tickHealth));
         registry.register(new WorldInteractionCheck());
         registry.register(new FastBreakCheck(tickHealth));
         registry.register(new InventorySanityCheck());
         registry.register(new InventoryMoveCheck());
-        registry.register(new ReachCheck(entityHistories, config));
+        registry.register(new TargetValidityCheck());
+        registry.register(new ReachCheck(histories, config));
+        registry.register(new CombatRayCheck(histories, config));
+        registry.register(new AuraDecoyCheck());
+        registry.register(new ClientInputCheck());
+        registry.register(new GroundStatusCheck(collisions));
         registry.register(new HorizontalSpeedCheck());
         registry.register(new VerticalPhysicsCheck());
         registry.register(new GroundSpoofCheck());
         registry.register(new PhaseCheck());
+        registry.register(new MediumMovementCheck());
+        registry.register(new VerticalDescentCheck());
+        registry.register(new NoSlowCheck());
+        registry.register(new KnockbackCheck());
         additionalChecks.forEach(registry::register);
         registry.freeze();
-
-        this.packetChecks = registry.packetChecks();
-        this.movementChecks = registry.movementChecks();
+        packetChecks = registry.packetChecks();
+        movementChecks = registry.movementChecks();
         configureEvents();
     }
 
     public EventNode<Event> eventNode() {
-        return eventNode;
+        return node;
+    }
+
+    private long now() {
+        return config.clock().nanoTime();
     }
 
     public void bootstrapOnlinePlayers() {
-        long now = System.nanoTime();
-        for (Player player : MinecraftServer.getConnectionManager().getOnlinePlayers()) {
-            playerDataManager.getOrCreate(player, now);
-        }
+        long now = now();
+        for (Player player : MinecraftServer.getConnectionManager().getOnlinePlayers())
+            players.getOrCreate(player, now);
     }
 
     public void exempt(Player player, Duration duration) {
-        Objects.requireNonNull(player, "player");
-        Objects.requireNonNull(duration, "duration");
-        if (duration.isNegative()) {
-            throw new IllegalArgumentException("duration cannot be negative");
-        }
-        long now = System.nanoTime();
-        playerDataManager.getOrCreate(player, now).exemptions().markManual(now, duration.toNanos());
+        exempt(player, null, duration);
     }
 
-    public void denyDamage(Player attacker, Entity victim, Duration duration, String reason) {
-        Objects.requireNonNull(attacker, "attacker");
-        Objects.requireNonNull(victim, "victim");
-        Objects.requireNonNull(duration, "duration");
-        if (duration.isNegative() || duration.isZero()) {
-            throw new IllegalArgumentException("duration must be positive");
+    public void exempt(Player player, String id, Duration duration) {
+        Objects.requireNonNull(player);
+        long nanos = TimeWindow.checkedNanos(duration);
+        long now = now();
+        if (id != null
+                && packetChecks.stream().noneMatch(c -> c.descriptor().id().equals(id))
+                && movementChecks.stream().noneMatch(c -> c.descriptor().id().equals(id)))
+            throw new IllegalArgumentException("Unknown check: " + id);
+        PlayerData data = players.getOrCreate(player, now);
+        synchronized (data) {
+            if (id == null) data.exemptions().markManual(now, nanos);
+            else data.exemptions().markScoped(id, now, nanos);
         }
-        long now = System.nanoTime();
-        playerDataManager.getOrCreate(attacker, now).damageGuard().arm(victim.getUuid(), reason, now, duration.toNanos());
+    }
+
+    /**
+     * Legacy explicit next-damage guard, cleared at the next native attack. Prefer action IDs for
+     * asynchronous damage.
+     */
+    public void denyDamage(Player attacker, Entity victim, Duration duration, String reason) {
+        long nanos = TimeWindow.checkedNanos(duration);
+        if (nanos == 0) throw new IllegalArgumentException("duration must be positive");
+        PlayerData data = players.getOrCreate(Objects.requireNonNull(attacker), now());
+        synchronized (data) {
+            data.damageGuard().arm(Objects.requireNonNull(victim).getUuid(), reason, now(), nanos);
+        }
+    }
+
+    public void denyDamage(
+            Player attacker, Entity victim, long actionId, Duration duration, String reason) {
+        if (actionId <= 0) throw new IllegalArgumentException("actionId must be positive");
+        long nanos = TimeWindow.checkedNanos(duration);
+        if (nanos == 0) throw new IllegalArgumentException("duration must be positive");
+        PlayerData data = players.getOrCreate(attacker, now());
+        synchronized (data) {
+            data.damageGuard().arm(victim.getUuid(), actionId, reason, now(), nanos);
+        }
+    }
+
+    public boolean consumeDamageDenial(Player attacker, Entity victim, long actionId) {
+        if (actionId <= 0) throw new IllegalArgumentException("actionId must be positive");
+        PlayerData data = players.find(attacker);
+        if (data == null) return false;
+        synchronized (data) {
+            if (!data.damageGuard().appliesTo(victim.getUuid(), actionId, now())) return false;
+            data.damageGuard().clear();
+            return true;
+        }
     }
 
     public int trackedPlayers() {
-        return playerDataManager.size();
+        return players.size();
     }
 
-    public NetworkSnapshot networkSnapshot(Player player, long nowNanos) {
-        PlayerData data = playerDataManager.find(player);
-        return data == null ? null : data.synchronization().snapshot(nowNanos);
+    public NetworkSnapshot networkSnapshot(Player player, long now) {
+        PlayerData data = players.find(player);
+        if (data == null) return null;
+        synchronized (data) {
+            return data.synchronization().snapshot(now);
+        }
+    }
+
+    public SynchronizationDiagnostics synchronizationDiagnostics(Player player, long now) {
+        PlayerData data = players.find(player);
+        if (data == null) return null;
+        synchronized (data) {
+            return data.synchronization().diagnostics(now);
+        }
     }
 
     public CatACMetrics metrics() {
-        EnforcementMetrics metrics = enforcement.metrics();
-        return new CatACMetrics(metrics.violationSamples(), metrics.alerts(), metrics.cancelledPackets(),
-                metrics.setbacks(), metrics.kicks(), metrics.floodDrops(), metrics.floodKicks(), playerDataManager.size());
+        var m = enforcement.metrics();
+        return new CatACMetrics(
+                m.violationSamples(),
+                m.alerts(),
+                m.cancelledPackets(),
+                m.setbacks(),
+                m.kicks(),
+                m.floodDrops(),
+                m.floodKicks(),
+                players.size());
+    }
+
+    public List<CheckDiagnostics> diagnostics() {
+        var list = new ArrayList<CheckDiagnostics>();
+        packetChecks.forEach(
+                c -> list.add(c.runtime().snapshot(c.descriptor().id(), c.policy().enabled())));
+        movementChecks.forEach(
+                c -> list.add(c.runtime().snapshot(c.descriptor().id(), c.policy().enabled())));
+        return List.copyOf(list);
+    }
+
+    public IntegrationHealth health() {
+        long overflows = 0;
+        for (PlayerData data : players.snapshot()) overflows += data.outboundOverflows();
+        return new IntegrationHealth(
+                exemptionProviderHealthy.get(),
+                classifierHealthy.get(),
+                floodHandlerHealthy.get(),
+                damageProviderHealthy.get(),
+                overflows,
+                callbackFaults.count() + enforcement.callbackFaults());
+    }
+
+    public List<DetectionTrace> traces(Player player) {
+        PlayerData data = players.find(player);
+        if (data == null) return List.of();
+        synchronized (data) {
+            return data.traces().snapshot();
+        }
     }
 
     public void clear() {
-        for (Player player : MinecraftServer.getConnectionManager().getOnlinePlayers()) {
-            PlayerData data = playerDataManager.find(player);
-            if (data != null) {
-                auraDecoys.remove(player, data.auraDecoy());
+        for (PlayerData data : players.closeAndSnapshot())
+            synchronized (data) {
+                settle(data);
+                data.retire();
+                decoys.remove(data.player(), data.auraDecoy());
             }
-        }
-        playerDataManager.clear();
-        entityHistories.clear();
+        players.clear();
+        histories.clear();
     }
 
     private void configureEvents() {
-        eventNode.addListener(PlayerPacketEvent.class, this::onPacket);
-        eventNode.addListener(PlayerMoveEvent.class, this::onMove);
-        eventNode.addListener(PlayerSpawnEvent.class, this::onSpawn);
-        eventNode.addListener(PlayerDisconnectEvent.class, event -> removePlayer(event.getPlayer()));
-        eventNode.addListener(EntityTeleportEvent.class, this::onTeleport);
-        eventNode.addListener(EntityVelocityEvent.class, this::onVelocity);
-        eventNode.addListener(EntityDamageEvent.class, this::onDamage);
-        eventNode.addListener(EntitySpawnEvent.class, event -> entityHistories.track(event.getEntity(), System.nanoTime()));
-        eventNode.addListener(EntityTickEvent.class, event -> entityHistories.track(event.getEntity(), System.nanoTime()));
-        eventNode.addListener(EntityDespawnEvent.class, event -> entityHistories.remove(event.getEntity()));
-        eventNode.addListener(ServerTickMonitorEvent.class, event -> {
-            long now = System.nanoTime();
-            tickHealth.recordTick(event.getTickMonitor().getTickTime(), now);
-            playerDataManager.tickSynchronizations(now);
-            for (Player player : MinecraftServer.getConnectionManager().getOnlinePlayers()) {
-                PlayerData data = playerDataManager.find(player);
-                if (data != null && data.auraDecoy().expired(now)) {
-                    auraDecoys.remove(player, data.auraDecoy());
-                }
+        node.addListener(PlayerPacketEvent.class, this::onPacket);
+        node.addListener(PlayerMoveEvent.class, this::onMove);
+        node.addListener(PlayerSpawnEvent.class, this::onSpawn);
+        node.addListener(PlayerDisconnectEvent.class, e -> removePlayer(e.getPlayer()));
+        node.addListener(EntityTeleportEvent.class, this::onTeleport);
+        node.addListener(EntityVelocityEvent.class, this::onVelocity);
+        node.addListener(EntityDamageEvent.class, this::onDamage);
+        node.addListener(EntitySpawnEvent.class, e -> histories.track(e.getEntity(), now()));
+        node.addListener(EntityTickEvent.class, this::onEntityTick);
+        node.addListener(EntityDespawnEvent.class, e -> histories.remove(e.getEntity()));
+        // Async output notifications enter a bounded mailbox, never the mutable player monitor.
+        node.addListener(
+                PlayerPacketOutEvent.class,
+                e -> {
+                    if (e.isCancelled()) return;
+                    PlayerData data = players.find(e.getPlayer());
+                    if (data == null) return;
+                    if (e.getPacket() instanceof PlayerPositionAndLookPacket p)
+                        data.offerOutbound(new OutboundSignal(p.teleportId(), null, now()));
+                    else if (e.getPacket() instanceof EntityVelocityPacket p
+                            && p.entityId() == e.getPlayer().getEntityId())
+                        data.offerOutbound(new OutboundSignal(null, p.velocity(), now()));
+                });
+        node.addListener(
+                ServerTickMonitorEvent.class,
+                e -> tickHealth.recordTick(e.getTickMonitor().getTickTime(), now()));
+    }
+
+    private void settle(PlayerData data) {
+        ActionReceipt receipt = data.consumeReceipt();
+        if (receipt == null) return;
+        if (receipt.packet() != null && receipt.packet().isCancelled()) {
+            if (receipt.flood()) {
+                if (config.telemetryEnabled()) enforcement.metrics().flood(false);
+            } else enforcement.applied(true, false, false);
+        } else if (receipt.movement() != null) {
+            var event = receipt.movement();
+            if (receipt.target() == null) {
+                if (event.isCancelled()) enforcement.applied(true, false, false);
+            } else if (!event.isCancelled()
+                    && event.getPlayer().getInstance() == receipt.instance()
+                    && event.getNewPosition().samePoint(receipt.target())
+                    && event.getPlayer().getPosition().samePoint(receipt.target())
+                    && event.getPlayer().getLastSentTeleportId() != receipt.previousTeleportId())
+                enforcement.applied(false, true, false);
+        }
+    }
+
+    private void drain(PlayerData data, long now) {
+        settle(data);
+        if (data.outputDegraded()) {
+            data.prediction().reset();
+            data.impulse().reset();
+            data.exemptions().markVelocity(now, 1_000_000_000L);
+        }
+        OutboundSignal s;
+        while ((s = data.pollOutbound()) != null) {
+            if (s.teleportId() != null) {
+                data.synchronization().sentTeleport(s.teleportId(), s.timeNanos());
+                data.invalidatePending();
+                data.positionHistory().clear();
+                histories.discontinuity(data.player());
             }
-        });
+            if (s.velocity() != null) {
+                data.synchronization().markVelocity(s.velocity(), s.timeNanos());
+                data.impulse().sent(s.velocity(), s.timeNanos());
+            }
+        }
+        data.synchronization()
+                .observeNativeTeleport(
+                        data.player().getLastSentTeleportId(),
+                        data.player().getLastReceivedTeleportId());
+        var committedTeleport = data.committedServerTeleport(now);
+        if (committedTeleport != null) {
+            CollisionSnapshot verified = new CollisionSnapshot();
+            collisions.analyze(data.player(), committedTeleport, verified);
+            if (verified.complete() && !verified.insideSolid())
+                data.resetMotion(committedTeleport, now);
+        }
+        data.confirmMovement();
+        var vector = data.synchronization().consumeAcknowledgedVelocity();
+        if (vector != null) data.impulse().acknowledge(vector, now);
+    }
+
+    private void onEntityTick(EntityTickEvent event) {
+        long now = now();
+        histories.track(event.getEntity(), now);
+        if (!(event.getEntity() instanceof Player p)) return;
+        PlayerData data = players.find(p);
+        if (data == null) return;
+        synchronized (data) {
+            if (data.retired()) return;
+            drain(data, now);
+            data.synchronization().tick(p, now);
+            if (data.auraDecoy().expired(now)) decoys.remove(p, data.auraDecoy());
+        }
     }
 
     private void onPacket(PlayerPacketEvent event) {
-        if (event.isCancelled()) {
-            return;
-        }
-        long now = System.nanoTime();
-        PlayerData data = playerDataManager.getOrCreate(event.getPlayer(), now);
-        if (!allowPacket(event, data, now)) {
-            return;
-        }
-        if (event.getPacket() instanceof ClientInteractEntityPacket attack && auraDecoys.targetsDecoy(data.auraDecoy(), attack)) {
-            boolean confirmed = auraDecoys.confirmAttack(event.getPlayer(), data.auraDecoy(), attack, now);
-            auraDecoys.remove(event.getPlayer(), data.auraDecoy());
-            if (confirmed) {
-                event.setCancelled(true);
-                if (enforcement.handleAuraConfirmation(data, AURA_DECOY_DESCRIPTOR,
-                        "attacked armed private decoy while target remained behind view")) {
-                    event.getPlayer().kick(config.auraDecoyPolicy().kickMessage());
-                }
-                return;
-            }
-        }
-        if (event.getPacket() instanceof ClientPongPacket pong) {
-            data.synchronization().onPong(pong.id(), now);
-        } else if (event.getPacket() instanceof ClientTeleportConfirmPacket confirm) {
-            data.synchronization().onTeleportConfirm(confirm.teleportId(), now);
-        }
-        for (RegisteredPacketCheck registered : packetChecks) {
-            if (!registered.runtime().active() || !registered.policy().enabled()) {
-                continue;
-            }
-            String id = registered.check().descriptor().id();
-            boolean securityCritical = INVALID_MOVEMENT_ID.equals(id);
-            if (!securityCritical && isExternallyExempt(data, id, now)) {
-                continue;
-            }
-
-            CheckResult result = evaluatePacketCheck(registered, event, data, now);
-            if (COMBAT_REACH_ID.equals(id) && !result.passed() &&
-                    result.severity() >= config.auraDecoyPolicy().triggerSeverity() &&
-                    canDeployAuraDecoy(event.getPlayer(), data, now)) {
-                auraDecoys.deploy(event.getPlayer(), data.auraDecoy(), config.auraDecoyPolicy(), now);
-            }
-            EnforcementDecision decision = enforcement.handle(data, registered.slot(),
-                    registered.check().descriptor(), registered.policy(), result, now);
-            if (decision.cancel()) {
-                armDamageGuardForAttack(event.getPlayer(), data, event.getPacket(), id, now);
-            }
-            if (decision.cancel()) {
-                event.setCancelled(true);
-                if (!decision.kick()) {
+        if (event.isCancelled()) return;
+        long now = now();
+        PlayerData data = players.getOrCreateIfOpen(event.getPlayer(), now);
+        if (data == null) return;
+        synchronized (data) {
+            if (data.retired()) return;
+            drain(data, now);
+            boolean control =
+                    event.getPacket() instanceof ClientPongPacket
+                            || event.getPacket() instanceof ClientTeleportConfirmPacket
+                            || event.getPacket()
+                                    instanceof
+                                    net.minestom.server.network.packet.client.common
+                                            .ClientKeepAlivePacket
+                            || event.getPacket() instanceof ClientChunkBatchReceivedPacket;
+            if (!allowPacket(event, data, now, control)) return;
+            if (event.getPacket() instanceof ClientPongPacket p)
+                data.synchronization().onPong(p.id(), now);
+            else if (event.getPacket() instanceof ClientTeleportConfirmPacket p)
+                data.synchronization().onTeleportConfirm(p.teleportId(), now);
+            if (event.getPacket() instanceof ClientInteractEntityPacket attack
+                    && attack.type() instanceof ClientInteractEntityPacket.Attack) {
+                data.damageGuard().clearLegacy();
+                if (decoys.targetsDecoy(data.auraDecoy(), attack)) {
+                    event.setCancelled(true);
+                    data.receipt(ActionReceipt.packet(event, false));
+                    try {
+                        for (var c : packetChecks)
+                            if (c.descriptor().id().equals("combat.aura-decoy")
+                                    && c.policy().enabled()
+                                    && c.runtime().active()) {
+                                if (externallyExempt(data, c.descriptor().id(), now)) {
+                                    if (config.telemetryEnabled())
+                                        c.runtime().bypass(SkipReason.EXEMPT);
+                                    continue;
+                                }
+                                enforcement.handle(
+                                        data,
+                                        c.slot(),
+                                        c.descriptor(),
+                                        c.policy(),
+                                        evaluate(c, event, data, now),
+                                        now);
+                            }
+                    } finally {
+                        decoys.remove(event.getPlayer(), data.auraDecoy());
+                    }
                     return;
                 }
             }
-            if (decision.kick()) {
-                event.getPlayer().kick(config.kickMessage());
-                return;
+            for (var c : packetChecks) {
+                if (!c.runtime().active() || !c.policy().enabled() || !c.accepts(event.getPacket()))
+                    continue;
+                boolean hardening = c.descriptor().capabilities().hardening();
+                if (!hardening && externallyExempt(data, c.descriptor().id(), now)) {
+                    if (config.telemetryEnabled()) c.runtime().bypass(SkipReason.EXEMPT);
+                    continue;
+                }
+                CheckResult result = evaluate(c, event, data, now);
+                if (c.descriptor().id().equals("combat.reach")
+                        && result.failed()
+                        && result.severity() >= config.auraDecoyPolicy().triggerSeverity()
+                        && canDeployDecoy(data, now))
+                    decoys.deploy(data.player(), data.auraDecoy(), config.auraDecoyPolicy(), now);
+                var decision =
+                        enforcement.handle(data, c.slot(), c.descriptor(), c.policy(), result, now);
+                if (decision.cancel()) {
+                    event.setCancelled(true);
+                    reconcile(event);
+                    data.receipt(ActionReceipt.packet(event, false));
+                }
+                if (decision.kick()) {
+                    event.getPlayer().kick(config.kickMessage());
+                    enforcement.applied(false, false, true);
+                    return;
+                }
+                if (decision.cancel()) return;
             }
         }
+    }
+
+    private void reconcile(PlayerPacketEvent event) {
+        Player p = event.getPlayer();
+        var world = p.getInstance();
+        if (event.getPacket() instanceof ClientClickWindowPacket
+                || event.getPacket() instanceof ClientCreativeInventoryActionPacket) {
+            p.getInventory().update(p);
+            if (p.getOpenInventory() != null) p.getOpenInventory().update(p);
+            return;
+        }
+        net.minestom.server.coordinate.Point block = null, adjacent = null;
+        int sequence = -1;
+        if (event.getPacket() instanceof ClientPlayerActionPacket a) {
+            block = a.blockPosition();
+            sequence = a.sequence();
+        } else if (event.getPacket() instanceof ClientPlayerBlockPlacementPacket a) {
+            block = a.blockPosition();
+            adjacent = block.add(a.blockFace().toDirection().vec());
+            sequence = a.sequence();
+        }
+        if (block == null
+                || world == null
+                || sequence < 0
+                || !Double.isFinite(block.x())
+                || !Double.isFinite(block.y())
+                || !Double.isFinite(block.z())) return;
+        if (world.isChunkLoaded(block))
+            p.sendPacket(
+                    new net.minestom.server.network.packet.server.play.BlockChangePacket(
+                            block, world.getBlock(block)));
+        if (adjacent != null && world.isChunkLoaded(adjacent))
+            p.sendPacket(
+                    new net.minestom.server.network.packet.server.play.BlockChangePacket(
+                            adjacent, world.getBlock(adjacent)));
+        p.sendPacket(
+                new net.minestom.server.network.packet.server.play.AcknowledgeBlockChangePacket(
+                        sequence));
     }
 
     private void onMove(PlayerMoveEvent event) {
-        if (event.isCancelled()) {
-            return;
-        }
-        long now = System.nanoTime();
-        PlayerData data = playerDataManager.getOrCreate(event.getPlayer(), now);
-        CollisionSnapshot collision = data.collision();
-        collisionAnalyzer.analyze(event.getPlayer(), event.getPlayer().getPosition(), event.getNewPosition(), collision);
-
-        MovementFrame frame = data.movementFrame();
-        frame.reset(event.getPlayer(), event.getPlayer().getPosition(), event.getNewPosition(),
-                event.isOnGround(), now, data.nextMovementSequence(), collision);
-        data.prediction().prepare(frame, data.synchronization());
-
-        boolean skipTemporalChecks = data.exemptions().movementExempt(now) ||
-                data.synchronization().movementUncertain(now) ||
-                tickHealth.isLagCompensating(now);
-        boolean suspicious = false;
-        boolean cancel = false;
-        boolean setback = false;
-
-        if (!skipTemporalChecks) {
-            for (RegisteredMovementCheck registered : movementChecks) {
-                if (!registered.runtime().active() || !registered.policy().enabled()) {
-                    continue;
-                }
-                String id = registered.check().descriptor().id();
-                if (isExternallyExempt(data, id, now)) {
-                    continue;
-                }
-                CheckResult result = evaluateMovementCheck(registered, frame, data);
-                suspicious |= !result.passed();
-                EnforcementDecision decision = enforcement.handle(data, registered.slot(),
-                        registered.check().descriptor(), registered.policy(), result, now);
-                setback |= decision.setback();
-                cancel |= decision.cancel() && !decision.setback();
-                if (decision.kick()) {
-                    event.getPlayer().kick(config.kickMessage());
-                    cancel = true;
+        if (event.isCancelled()) return;
+        long now = now();
+        PlayerData data = players.getOrCreateIfOpen(event.getPlayer(), now);
+        if (data == null) return;
+        synchronized (data) {
+            if (data.retired()) return;
+            drain(data, now);
+            var proposed = event.getNewPosition();
+            if (!Double.isFinite(proposed.x())
+                    || !Double.isFinite(proposed.y())
+                    || !Double.isFinite(proposed.z())
+                    || !Float.isFinite(proposed.yaw())
+                    || !Float.isFinite(proposed.pitch())
+                    || Math.abs(proposed.x()) > 30_000_000
+                    || Math.abs(proposed.y()) > 30_000_000
+                    || Math.abs(proposed.z()) > 30_000_000) {
+                event.setCancelled(true);
+                data.receipt(ActionReceipt.movement(event, null));
+                data.invalidatePending();
+                return;
+            }
+            // Rotation-only packets cannot become a physics tick or teach a velocity of zero.
+            if (event.getPlayer().getPosition().samePoint(event.getNewPosition())) return;
+            collisions.analyze(
+                    event.getPlayer(),
+                    event.getPlayer().getPosition(),
+                    event.getNewPosition(),
+                    data.collision());
+            MovementFrame frame = data.movementFrame();
+            frame.reset(
+                    data.player(),
+                    data.player().getPosition(),
+                    event.getNewPosition(),
+                    event.isOnGround(),
+                    now,
+                    data.nextMovementSequence(),
+                    data.collision());
+            data.prediction().prepare(frame, data.synchronization(), data.impulse());
+            boolean temporal =
+                    data.exemptions().movementExempt(now)
+                            || data.synchronization().movementUncertain(now)
+                            || tickHealth.isLagCompensating(now);
+            boolean modelAvailable = true;
+            for (var required : movementChecks)
+                if (required.descriptor().capabilities().correctMovement()
+                        && (!required.policy().enabled() || !required.runtime().active())) {
+                    modelAvailable = false;
                     break;
                 }
+            boolean clean = !temporal && data.collision().complete() && modelAvailable,
+                    cancel = false,
+                    setback = false;
+            int evaluated = 0;
+            for (var c : movementChecks) {
+                if (!c.policy().enabled() || !c.runtime().active()) {
+                    if (c.descriptor().capabilities().correctMovement()) clean = false;
+                    continue;
+                }
+                boolean geometric = c.descriptor().id().equals("movement.phase");
+                if (((temporal || !modelAvailable) && !geometric)
+                        || externallyExempt(data, c.descriptor().id(), now)) {
+                    if (config.telemetryEnabled())
+                        c.runtime()
+                                .bypass(
+                                        !modelAvailable
+                                                ? SkipReason.INTEGRATION_FAILURE
+                                                : temporal
+                                                        ? SkipReason.SYNCHRONIZING
+                                                        : SkipReason.EXEMPT);
+                    if (c.descriptor().capabilities().correctMovement()) clean = false;
+                    continue;
+                }
+                CheckResult result = evaluate(c, frame, data);
+                if (result.evaluated()) evaluated++;
+                if (c.descriptor().capabilities().correctMovement()
+                        && (result.failed() || result.outcome() == CheckResult.Outcome.UNCERTAIN))
+                    clean = false;
+                var decision =
+                        enforcement.handle(data, c.slot(), c.descriptor(), c.policy(), result, now);
+                cancel |= decision.cancel();
+                setback |= decision.setback();
+                if (decision.kick()) {
+                    event.setCancelled(true);
+                    data.player().kick(config.kickMessage());
+                    enforcement.applied(true, false, true);
+                    data.invalidatePending();
+                    return;
+                }
             }
-        }
-
-        if (setback) {
-            event.setNewPosition(data.lastSafePosition());
-            data.exemptions().markTeleport(now, config.teleportGraceNanos());
-            data.synchronization().markTeleport(now);
-            data.resetMotion(data.lastSafePosition(), now);
-            return;
-        }
-        if (cancel) {
-            event.setCancelled(true);
-            data.exemptions().markTeleport(now, config.teleportGraceNanos());
-            data.synchronization().markTeleport(now);
-            data.resetMotion(event.getPlayer().getPosition(), now);
-            return;
-        }
-        updateAcceptedMovement(data, frame, !suspicious);
-    }
-
-    private void updateAcceptedMovement(PlayerData data, MovementFrame frame, boolean clean) {
-        CollisionSnapshot collision = frame.collision();
-        data.previousHorizontalDistance(frame.horizontalDistance());
-        data.previousDeltaY(frame.deltaY());
-        data.prediction().observe(frame);
-        data.positionHistory().add(frame.to(), frame.nowNanos());
-
-        if (collision.supported()) {
-            data.airFrames(0);
-            data.stableGroundFrames(data.stableGroundFrames() + 1);
-            if (clean && collision.complete() && !collision.insideSolid() && data.stableGroundFrames() >= 2) {
-                data.lastSafePosition(frame.to());
+            if (setback && data.hasSafePosition()) {
+                CollisionSnapshot anchor = new CollisionSnapshot();
+                collisions.analyze(data.player(), data.lastSafePosition(), anchor);
+                if (!anchor.complete() || anchor.insideSolid()) {
+                    event.setCancelled(true);
+                    data.receipt(ActionReceipt.movement(event, null));
+                    data.invalidatePending();
+                    return;
+                }
+                event.setNewPosition(data.lastSafePosition());
+                data.receipt(ActionReceipt.movement(event, data.lastSafePosition()));
+                data.synchronization().markTeleport(now, data.player().getLastSentTeleportId());
+                data.exemptions().markTeleport(now, config.teleportGraceNanos());
+                data.resetMotion(data.lastSafePosition(), now);
+                return;
             }
-        } else {
-            data.airFrames(data.airFrames() + 1);
-            data.stableGroundFrames(0);
+            if (cancel) {
+                event.setCancelled(true);
+                data.receipt(ActionReceipt.movement(event, null));
+                data.synchronization().markTeleport(now, data.player().getLastSentTeleportId());
+                data.exemptions().markTeleport(now, config.teleportGraceNanos());
+                data.invalidatePending();
+                data.prediction().reset();
+                return;
+            }
+            data.stageMovement(frame, clean && evaluated > 0);
         }
     }
 
     private void onSpawn(PlayerSpawnEvent event) {
-        long now = System.nanoTime();
-        PlayerData data = playerDataManager.getOrCreate(event.getPlayer(), now);
-        data.exemptions().markTeleport(now, config.joinGraceNanos());
-        data.resetMotion(event.getPlayer().getPosition(), now);
-    }
-
-    private void removePlayer(Player player) {
-        PlayerData data = playerDataManager.find(player);
-        if (data != null) {
-            auraDecoys.remove(player, data.auraDecoy());
+        long now = now();
+        PlayerData data = players.getOrCreateIfOpen(event.getPlayer(), now);
+        if (data == null) return;
+        synchronized (data) {
+            if (data.retired()) return;
+            data.exemptions().markTeleport(now, config.joinGraceNanos());
+            data.resetMotion(data.player().getPosition(), now);
         }
-        playerDataManager.remove(player);
-    }
-
-    private boolean canDeployAuraDecoy(Player player, PlayerData data, long nowNanos) {
-        GameMode gameMode = player.getGameMode();
-        return config.auraDecoyPolicy().enabled() &&
-                (gameMode == GameMode.SURVIVAL || gameMode == GameMode.ADVENTURE) &&
-                player.getVehicle() == null && !player.isFlyingWithElytra() &&
-                !data.exemptions().manualExempt(nowNanos) && !data.synchronization().movementUncertain(nowNanos);
     }
 
     private void onTeleport(EntityTeleportEvent event) {
-        if (!(event.getEntity() instanceof Player player)) {
-            return;
+        histories.discontinuity(event.getEntity());
+        if (!(event.getEntity() instanceof Player p)) return;
+        long now = now();
+        PlayerData data = players.getOrCreateIfOpen(p, now);
+        if (data == null) return;
+        synchronized (data) {
+            if (data.retired()) return;
+            data.exemptions().markTeleport(now, config.teleportGraceNanos());
+            data.synchronization().markTeleport(now, p.getLastSentTeleportId());
+            // The event is pre-commit: do not make its candidate a trusted anchor.
+            data.serverTeleport(event.getNewPosition(), now);
+            data.prediction().reset();
+            data.impulse().reset();
+            data.digging().clear();
+            data.positionHistory().clear();
         }
-        long now = System.nanoTime();
-        PlayerData data = playerDataManager.getOrCreate(player, now);
-        data.exemptions().markTeleport(now, config.teleportGraceNanos());
-        data.synchronization().markTeleport(now);
-        data.resetMotion(event.getNewPosition(), now);
     }
 
     private void onVelocity(EntityVelocityEvent event) {
-        if (!(event.getEntity() instanceof Player player)) {
-            return;
+        if (event.isCancelled() || !(event.getEntity() instanceof Player p)) return;
+        long now = now();
+        PlayerData data = players.getOrCreateIfOpen(p, now);
+        if (data == null) return;
+        synchronized (data) {
+            if (data.retired()) return;
+            data.exemptions().markVelocity(now, config.velocityGraceNanos());
+            data.prediction().reset();
         }
-        long now = System.nanoTime();
-        PlayerData data = playerDataManager.getOrCreate(player, now);
-        data.exemptions().markVelocity(now, config.velocityGraceNanos());
-        data.synchronization().markVelocity(now);
     }
 
     private void onDamage(EntityDamageEvent event) {
-        if (event.isCancelled() || !config.damageProtectionPolicy().enabled()) {
-            return;
-        }
-        Entity source = event.getDamage().getAttacker();
-        if (!(source instanceof Player attacker)) {
-            return;
-        }
-        PlayerData data = playerDataManager.find(attacker);
-        if (data == null || !data.damageGuard().appliesTo(event.getEntity().getUuid(), System.nanoTime())) {
-            return;
-        }
-        String reason = data.damageGuard().reason();
-        data.damageGuard().clear();
-        DamageDecision decision = DamageDecision.DENY;
-        if (damageDecisionProviderAvailable.get()) {
-            try {
-                decision = Objects.requireNonNull(config.damageProtectionPolicy().decisionProvider()
-                        .decide(new DamageContext(attacker, event.getEntity(), event.getDamage(), reason)),
-                        "DamageDecisionProvider returned null");
-            } catch (RuntimeException exception) {
-                if (damageDecisionProviderAvailable.compareAndSet(true, false)) {
-                    LOGGER.log(System.Logger.Level.ERROR,
-                            "CatAC disabled the damage decision provider after it threw an exception", exception);
+        if (event.isCancelled()
+                || !config.damageProtectionPolicy().enabled()
+                || !(event.getDamage().getAttacker() instanceof Player p)) return;
+        PlayerData data = players.find(p);
+        if (data == null) return;
+        synchronized (data) {
+            if (!data.damageGuard().appliesTo(event.getEntity().getUuid(), now())) return;
+            String reason = data.damageGuard().reason();
+            data.damageGuard().clear();
+            DamageDecision decision = DamageDecision.DENY;
+            if (damageProviderHealthy.get())
+                try {
+                    decision =
+                            Objects.requireNonNull(
+                                    config.damageProtectionPolicy()
+                                            .decisionProvider()
+                                            .decide(
+                                                    new DamageContext(
+                                                            p,
+                                                            event.getEntity(),
+                                                            event.getDamage(),
+                                                            reason)));
+                } catch (RuntimeException ex) {
+                    report(damageProviderHealthy, "damage provider", ex);
                 }
-            }
-        }
-        if (decision == DamageDecision.DENY) {
-            event.setCancelled(true);
+            if (decision == DamageDecision.DENY) event.setCancelled(true);
         }
     }
 
-    private boolean allowPacket(PlayerPacketEvent event, PlayerData data, long nowNanos) {
-        var policy = config.packetFloodPolicy();
-        if (!policy.enabled()) return true;
-        PacketCost cost = classifyPacket(event.getPlayer(), event.getPacket());
-        if (data.packetFlood().tryConsume(cost, policy.totalBudget(), policy.heavyBudget(), nowNanos)) {
+    private void removePlayer(Player p) {
+        PlayerData data = players.find(p);
+        if (data != null)
+            synchronized (data) {
+                settle(data);
+                data.retire();
+                decoys.remove(p, data.auraDecoy());
+            }
+        players.remove(p);
+        histories.remove(p);
+    }
+
+    private boolean canDeployDecoy(PlayerData d, long now) {
+        Player p = d.player();
+        return config.auraDecoyPolicy().enabled()
+                && d.clientProfile() == ClientProfile.JAVA_1_21_11
+                && (p.getGameMode() == GameMode.SURVIVAL || p.getGameMode() == GameMode.ADVENTURE)
+                && p.getVehicle() == null
+                && !p.isFlyingWithElytra()
+                && !d.exemptions().manualExempt(now)
+                && !d.synchronization().movementUncertain(now);
+    }
+
+    private boolean externallyExempt(PlayerData d, String id, long now) {
+        if (d.exemptions().manualExempt(now) || d.exemptions().scopedExempt(id, now)) return true;
+        if (!exemptionProviderHealthy.get()) return true;
+        try {
+            return config.exemptionProvider().isExempt(d.player(), id);
+        } catch (RuntimeException ex) {
+            report(exemptionProviderHealthy, "exemption provider", ex);
             return true;
         }
-        int strikes = data.packetFlood().strike(nowNanos, policy.strikeWindow().toNanos());
-        boolean kick = strikes >= policy.strikesBeforeKick();
+    }
+
+    private boolean allowPacket(
+            PlayerPacketEvent event, PlayerData data, long now, boolean control) {
+        var policy = config.packetFloodPolicy();
+        if (!policy.enabled()) return true;
+        PacketCost cost = PacketCost.NORMAL;
+        if (classifierHealthy.get())
+            try {
+                cost =
+                        Objects.requireNonNull(
+                                policy.classifier().classify(data.player(), event.getPacket()));
+            } catch (RuntimeException ex) {
+                report(classifierHealthy, "packet classifier", ex);
+            }
+        // A separate bounded reserve preserves confirmations after an ordinary burst.
+        if (control
+                ? data.packetFlood().tryControl(now)
+                : data.packetFlood()
+                        .tryConsume(cost, policy.totalBudget(), policy.heavyBudget(), now))
+            return true;
+        int strikes = data.packetFlood().strike(now, policy.strikeWindow().toNanos());
+        boolean kick = policy.kickEnabled() && strikes >= policy.strikesBeforeKick();
         event.setCancelled(true);
-        if (config.telemetryEnabled()) enforcement.metrics().flood(kick);
-        PacketFloodEvent floodEvent = new PacketFloodEvent(event.getPlayer(), event.getPacket().getClass(), cost,
-                strikes, kick ? FloodAction.KICK : FloodAction.DROP);
-        publishFlood(floodEvent);
-        if (kick) event.getPlayer().kick(policy.kickMessage());
+        if (kick) {
+            if (config.telemetryEnabled()) enforcement.metrics().flood(true);
+        } else data.receipt(ActionReceipt.packet(event, true));
+        if (data.packetFlood().notifyAllowed(now, policy.notificationCooldown().toNanos())
+                || kick) {
+            var e =
+                    new PacketFloodEvent(
+                            data.player(),
+                            event.getPacket().getClass(),
+                            cost,
+                            strikes,
+                            kick ? FloodAction.KICK : FloodAction.DROP);
+            try {
+                MinecraftServer.getGlobalEventHandler().call(e);
+            } catch (RuntimeException ex) {
+                callbackFaults.report(CallbackFaults.Kind.FLOOD_EVENT, now, ex);
+            }
+            if (floodHandlerHealthy.get())
+                try {
+                    policy.handler().onFlood(e);
+                } catch (RuntimeException ex) {
+                    report(floodHandlerHealthy, "flood handler", ex);
+                }
+        }
+        if (kick) data.player().kick(policy.kickMessage());
         return false;
     }
 
-    private PacketCost classifyPacket(Player player, net.minestom.server.network.packet.client.ClientPacket packet) {
-        if (!packetCostClassifierAvailable.get()) return PacketCost.NORMAL;
+    private CheckResult evaluate(
+            RegisteredPacketCheck c, PlayerPacketEvent e, PlayerData d, long now) {
+        long start = config.telemetryEnabled() ? System.nanoTime() : 0;
+        CheckResult result;
         try {
-            return Objects.requireNonNull(config.packetFloodPolicy().classifier().classify(player, packet),
-                    "PacketCostClassifier returned null");
-        } catch (RuntimeException exception) {
-            if (packetCostClassifierAvailable.compareAndSet(true, false)) {
-                LOGGER.log(System.Logger.Level.ERROR,
-                        "CatAC disabled the packet cost classifier after it threw an exception", exception);
-            }
-            return PacketCost.NORMAL;
+            result = Objects.requireNonNull(c.check().evaluate(e, d, now));
+        } catch (RuntimeException ex) {
+            fault(c.runtime(), c.descriptor().id(), ex);
+            result = CheckResult.uncertain(SkipReason.INTEGRATION_FAILURE);
         }
+        if (config.telemetryEnabled()) c.runtime().record(result, System.nanoTime() - start);
+        return result;
     }
 
-    private void publishFlood(PacketFloodEvent event) {
+    private CheckResult evaluate(RegisteredMovementCheck c, MovementFrame f, PlayerData d) {
+        long start = config.telemetryEnabled() ? System.nanoTime() : 0;
+        CheckResult result;
         try {
-            MinecraftServer.getGlobalEventHandler().call(event);
-        } catch (RuntimeException exception) {
-            LOGGER.log(System.Logger.Level.ERROR, "CatAC packet flood event listener failed", exception);
+            result = Objects.requireNonNull(c.check().evaluate(f, d));
+        } catch (RuntimeException ex) {
+            fault(c.runtime(), c.descriptor().id(), ex);
+            result = CheckResult.uncertain(SkipReason.INTEGRATION_FAILURE);
         }
-        if (!packetFloodHandlerAvailable.get()) return;
-        try {
-            config.packetFloodPolicy().handler().onFlood(event);
-        } catch (RuntimeException exception) {
-            if (packetFloodHandlerAvailable.compareAndSet(true, false)) {
-                LOGGER.log(System.Logger.Level.ERROR,
-                        "CatAC disabled the packet flood handler after it threw an exception", exception);
-            }
-        }
+        if (config.telemetryEnabled()) c.runtime().record(result, System.nanoTime() - start);
+        return result;
     }
 
-    private void armDamageGuardForAttack(Player attacker, PlayerData data, Object packet, String reason,
-                                         long nowNanos) {
-        if (!config.damageProtectionPolicy().enabled() || !(packet instanceof ClientInteractEntityPacket interact) ||
-                !(interact.type() instanceof ClientInteractEntityPacket.Attack)) {
-            return;
-        }
-        if (attacker.getInstance() == null) {
-            return;
-        }
-        Entity target = attacker.getInstance().getEntityById(interact.targetId());
-        if (target instanceof LivingEntity) {
-            data.damageGuard().arm(target.getUuid(), reason, nowNanos,
-                    config.damageProtectionPolicy().denialWindow().toNanos());
-        }
+    private static void fault(CheckRuntime runtime, String id, RuntimeException ex) {
+        if (runtime.disableAfterFault())
+            LOGGER.log(System.Logger.Level.ERROR, "Check disabled after fault: " + id, ex);
     }
 
-    private boolean isExternallyExempt(PlayerData data, String checkId, long nowNanos) {
-        boolean manuallyExempt = data.exemptions().manualExempt(nowNanos);
-        if (manuallyExempt || !exemptionProviderAvailable.get()) {
-            return manuallyExempt;
-        }
-        try {
-            return config.exemptionProvider().isExempt(data.player(), checkId);
-        } catch (RuntimeException exception) {
-            if (exemptionProviderAvailable.compareAndSet(true, false)) {
-                LOGGER.log(System.Logger.Level.ERROR,
-                        "CatAC disabled the exemption provider after it threw an exception", exception);
-            }
-            return false;
-        }
-    }
-
-    private CheckResult evaluatePacketCheck(RegisteredPacketCheck registered, PlayerPacketEvent event,
-                                            PlayerData data, long nowNanos) {
-        try {
-            return Objects.requireNonNull(registered.check().evaluate(event, data, nowNanos),
-                    "PacketCheck returned null");
-        } catch (RuntimeException exception) {
-            disableFaultyCheck(registered.runtime(), registered.check().descriptor().id(), exception);
-            return CheckResult.pass();
-        }
-    }
-
-    private CheckResult evaluateMovementCheck(RegisteredMovementCheck registered, MovementFrame frame,
-                                              PlayerData data) {
-        try {
-            return Objects.requireNonNull(registered.check().evaluate(frame, data),
-                    "MovementCheck returned null");
-        } catch (RuntimeException exception) {
-            disableFaultyCheck(registered.runtime(), registered.check().descriptor().id(), exception);
-            return CheckResult.pass();
-        }
-    }
-
-    private static void disableFaultyCheck(dev.catac.internal.CheckRuntime runtime, String checkId,
-                                           RuntimeException exception) {
-        if (runtime.disableAfterFault()) {
-            LOGGER.log(System.Logger.Level.ERROR,
-                    "CatAC disabled check '" + checkId + "' after an evaluation failure", exception);
-        }
+    private static void report(AtomicBoolean healthy, String name, RuntimeException ex) {
+        if (healthy.compareAndSet(true, false))
+            LOGGER.log(System.Logger.Level.ERROR, "Integration degraded: " + name, ex);
     }
 }

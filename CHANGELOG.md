@@ -1,4 +1,31 @@
-# Changelog
+# Cambios
+
+## 2.0.0 — 2026-10-03
+
+Versión mayor por cambios en contratos de resultados, capacidades, política y records públicos. Objetivo fijado: Java 25 y Minestom `2026.05.11-1.21.11`.
+
+- Resultados `NOT_APPLICABLE`, `UNCERTAIN`, `PASS`, `FAIL` y `MALFORMED`; dispatch por tipos y evidencia numérica versionada.
+- Capacidades independientes de cancelación, corrección, expulsión y hardening. Modo global `MONITOR`, overrides por check y perfiles del host.
+- Decaimiento temporal de buffers, ventanas de incidentes y avisos contados sólo cuando se envían. Sin kick normal por una sola detección.
+- Reloj inyectable, ventanas compatibles con origen negativo y rollover; estado de jugador serializado y snapshots de historial sincronizados.
+- Captura acotada de teletransporte y velocidad enviados; correlación exacta de IDs, control reservado ante flood y diagnósticos de timeout.
+- Predictor alimentado sólo con candidatos validados y confirmados en el estado nativo final. Anclas con instancia y revalidación geométrica.
+- Colisión continua con shapes nativas, presupuesto explícito, rutas por ejes y step; factores lentos conservados y tolerancia de contacto al aterrizar.
+- Envolvente de velocidad vectorial, atributos de movimiento/salto y efectos modelados; calidad explícita para medios no modelados.
+- Rewind acotado con instancia, generación, pose/AABB y calidad temporal. Validación independiente de objetivo, rango, oclusión y rayo.
+- Excavación ligada a bloque, herramienta y contexto; interacción de bloques según atributo, con reconciliación de acciones canceladas.
+- Inventario estructural: slots negativos, botones, drag y ventanas; el click válido sigue la ruta autoritativa nativa sin duplicar operaciones.
+- Guarda de daño por identidad de acción del host; eliminación del armado automático para ataques nativos cancelados.
+- Circuit breaker de checks e integraciones con degradación observable, logs limitados, métricas de acción confirmada y trazas opcionales acotadas.
+- Checks experimentales de medio, descenso, no-slow, knockback y rayo; límites permanentes de observación. Señuelo de aura integrado en la política común.
+- Replay conectado al pipeline nativo, corpus versionado, fuzz reproducible, regresiones de concurrencia, benchmark local y consumidor externo del JAR.
+- Maven wrapper con checksum, compilación estricta, JAR reproducible y workflow de CI.
+
+Consulta [MIGRATION_2_0.md](docs/MIGRATION_2_0.md) antes de sustituir el artefacto en un host existente. Los pendientes empíricos y las familias no implementadas están en [ESTADO_IMPLEMENTACION.md](docs/ESTADO_IMPLEMENTACION.md).
+
+## Historial anterior conservado
+
+Las entradas siguientes describen versiones anteriores; sus contratos pueden haber cambiado en 2.0.
 
 ## 1.0.0 — protección de inundación de paquetes
 

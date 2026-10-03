@@ -1,10 +1,11 @@
 package dev.catac.state;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import net.minestom.server.collision.BoundingBox;
 import net.minestom.server.coordinate.Pos;
-import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import org.junit.jupiter.api.Test;
 
 class PositionHistoryTest {
     @Test
@@ -14,8 +15,9 @@ class PositionHistoryTest {
         history.add(new Pos(3.0, 0.0, 0.0), 100);
         history.add(new Pos(2.5, 0.0, 0.0), 200);
 
-        double distanceSquared = history.minimumEyeToBoxDistanceSquared(
-                0.0, 1.62, 0.0, playerBox, 150, new Pos(4.0, 0.0, 0.0));
+        double distanceSquared =
+                history.minimumEyeToBoxDistanceSquared(
+                        0.0, 1.62, 0.0, playerBox, 150, new Pos(4.0, 0.0, 0.0));
 
         assertEquals(4.84, distanceSquared, 1.0E-9);
     }
@@ -26,7 +28,7 @@ class PositionHistoryTest {
         for (int i = 0; i < 100; i++) {
             history.add(new Pos(i, 0, 0), i);
         }
-        assertEquals(32, history.size());
+        assertEquals(64, history.size());
     }
 
     @Test

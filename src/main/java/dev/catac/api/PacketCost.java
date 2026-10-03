@@ -7,6 +7,11 @@ public enum PacketCost {
 
     private final boolean heavy;
 
-    PacketCost(boolean heavy) { this.heavy = heavy; }
-    public boolean heavy() { return heavy; }
+    PacketCost(boolean heavy) {
+        this.heavy = heavy;
+    }
+
+    public boolean heavy() {
+        return heavy;
+    }
 }

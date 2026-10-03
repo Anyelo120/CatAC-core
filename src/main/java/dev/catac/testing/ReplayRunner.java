@@ -6,21 +6,25 @@ import java.util.Objects;
 
 /** Executes a pre-captured timeline in strict timestamp and sequence order. */
 public final class ReplayRunner {
-    private ReplayRunner() {
-    }
+    private ReplayRunner() {}
 
-    public static <T, R> ReplayReport<R> run(List<ReplayFrame<T>> frames, ReplayExecutor<T, R> executor) {
+    public static <T, R> ReplayReport<R> run(
+            List<ReplayFrame<T>> frames, ReplayExecutor<T, R> executor) {
         Objects.requireNonNull(frames, "frames");
         Objects.requireNonNull(executor, "executor");
         long previousSequence = -1L;
-        long previousNanos = -1L;
+        long previousNanos = 0L;
+        boolean first = true;
         List<R> results = new ArrayList<>(frames.size());
         for (ReplayFrame<T> frame : frames) {
             Objects.requireNonNull(frame, "frames cannot contain null");
-            if (frame.sequence() <= previousSequence || frame.timestampNanos() < previousNanos) {
-                throw new IllegalArgumentException("frames must be strictly sequenced and time ordered");
+            if (frame.sequence() <= previousSequence
+                    || (!first && frame.timestampNanos() - previousNanos < 0)) {
+                throw new IllegalArgumentException(
+                        "frames must be strictly sequenced and time ordered");
             }
             results.add(executor.execute(frame.payload(), frame.timestampNanos()));
+            first = false;
             previousSequence = frame.sequence();
             previousNanos = frame.timestampNanos();
         }

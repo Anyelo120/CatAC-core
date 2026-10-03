@@ -5,6 +5,28 @@ import dev.catac.config.PacketBudget;
 
 /** Two allocation-free token buckets and a bounded strike window per player. */
 public final class PacketFloodState {
+    private double controlTokens = 24;
+    private long controlRefill;
+    private boolean controlStarted;
+    private final TimeWindow notification = new TimeWindow();
+
+    public boolean tryControl(long now) {
+        if (controlStarted)
+            controlTokens =
+                    Math.min(24, controlTokens + Math.max(0, now - controlRefill) * .000000032);
+        controlStarted = true;
+        controlRefill = now;
+        if (controlTokens < 1) return false;
+        controlTokens--;
+        return true;
+    }
+
+    public boolean notifyAllowed(long now, long cooldown) {
+        if (notification.active(now)) return false;
+        notification.open(now, cooldown);
+        return true;
+    }
+
     private double totalTokens;
     private double heavyTokens;
     private long lastRefillNanos;
@@ -17,7 +39,8 @@ public final class PacketFloodState {
         lastRefillNanos = nowNanos;
     }
 
-    public boolean tryConsume(PacketCost cost, PacketBudget total, PacketBudget heavy, long nowNanos) {
+    public boolean tryConsume(
+            PacketCost cost, PacketBudget total, PacketBudget heavy, long nowNanos) {
         refill(total, heavy, nowNanos);
         if (totalTokens < 1.0 || (cost.heavy() && heavyTokens < 1.0)) return false;
         totalTokens -= 1.0;
@@ -30,7 +53,7 @@ public final class PacketFloodState {
             strikeWindowStartedNanos = nowNanos;
             strikes = 1;
         } else {
-            strikes++;
+            if (strikes < Integer.MAX_VALUE) strikes++;
         }
         return strikes;
     }

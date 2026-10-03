@@ -1,14 +1,15 @@
 package dev.catac;
 
-import dev.catac.check.CatCheck;
+import dev.catac.api.CatACMetrics;
 import dev.catac.api.CatACState;
 import dev.catac.api.NetworkSnapshot;
-import dev.catac.api.CatACMetrics;
+import dev.catac.check.CatCheck;
 import dev.catac.config.CatACConfig;
 import dev.catac.engine.CatEngine;
+
 import net.minestom.server.MinecraftServer;
-import net.minestom.server.entity.Player;
 import net.minestom.server.entity.Entity;
+import net.minestom.server.entity.Player;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -38,14 +39,14 @@ public final class CatAC implements AutoCloseable {
     }
 
     /**
-     * Returns the CatAC instance currently attached to the global Minestom
-     * event handler, if there is one.
+     * Returns the CatAC instance currently attached to the global Minestom event handler, if there
+     * is one.
      */
     public static Optional<CatAC> current() {
         return Optional.ofNullable(INSTALLED.get());
     }
 
-    public CatAC start() {
+    public synchronized CatAC start() {
         if (!state.compareAndSet(CatACState.NEW, CatACState.STARTED)) {
             throw new IllegalStateException("CatAC cannot start from state " + state.get());
         }
@@ -64,13 +65,14 @@ public final class CatAC implements AutoCloseable {
             if (attached) {
                 MinecraftServer.getGlobalEventHandler().removeChild(engine.eventNode());
             }
+            engine.clear();
             INSTALLED.compareAndSet(this, null);
-            state.set(CatACState.NEW);
+            state.set(CatACState.STOPPED);
             throw exception;
         }
     }
 
-    public void stop() {
+    public synchronized void stop() {
         CatACState previous = state.getAndSet(CatACState.STOPPED);
         if (previous != CatACState.STARTED) {
             return;
@@ -94,12 +96,52 @@ public final class CatAC implements AutoCloseable {
     }
 
     /**
-     * Protects one target from the attacker's next matching damage event. This
-     * is intended for a custom check that already invalidated a combat action.
+     * Protects one target from the attacker's next matching damage event. This is intended for a
+     * custom check that already invalidated a combat action.
      */
     public void denyDamage(Player attacker, Entity victim, Duration duration, String reason) {
         ensureStarted();
         engine.denyDamage(attacker, victim, duration, reason);
+    }
+
+    public Optional<dev.catac.api.SynchronizationDiagnostics> synchronizationDiagnostics(
+            Player player) {
+        ensureStarted();
+        return Optional.ofNullable(
+                engine.synchronizationDiagnostics(
+                        Objects.requireNonNull(player), config.clock().nanoTime()));
+    }
+
+    public dev.catac.api.IntegrationHealth health() {
+        ensureStarted();
+        return engine.health();
+    }
+
+    public java.util.List<dev.catac.api.CheckDiagnostics> diagnostics() {
+        ensureStarted();
+        return engine.diagnostics();
+    }
+
+    public java.util.List<dev.catac.api.DetectionTrace> traces(Player player) {
+        ensureStarted();
+        return engine.traces(Objects.requireNonNull(player));
+    }
+
+    public void exempt(Player player, String checkId, Duration duration) {
+        ensureStarted();
+        engine.exempt(player, checkId, duration);
+    }
+
+    public void denyDamage(
+            Player attacker, Entity victim, long actionId, Duration duration, String reason) {
+        ensureStarted();
+        engine.denyDamage(attacker, victim, actionId, duration, reason);
+    }
+
+    /** Consume this exact host action before applying custom delayed damage. */
+    public boolean consumeDamageDenial(Player attacker, Entity victim, long actionId) {
+        ensureStarted();
+        return engine.consumeDamageDenial(attacker, victim, actionId);
     }
 
     public CatACConfig config() {
@@ -119,13 +161,13 @@ public final class CatAC implements AutoCloseable {
     }
 
     /**
-     * Returns CatAC's bounded network synchronization view for a tracked player.
-     * This does not send a packet or retain additional state.
+     * Returns CatAC's bounded network synchronization view for a tracked player. This does not send
+     * a packet or retain additional state.
      */
     public Optional<NetworkSnapshot> networkSnapshot(Player player) {
         ensureStarted();
         Objects.requireNonNull(player, "player");
-        return Optional.ofNullable(engine.networkSnapshot(player, System.nanoTime()));
+        return Optional.ofNullable(engine.networkSnapshot(player, config.clock().nanoTime()));
     }
 
     /** Returns cumulative telemetry without retaining player or packet payloads. */
@@ -144,8 +186,7 @@ public final class CatAC implements AutoCloseable {
         private CatACConfig config = CatACConfig.defaults();
         private final List<CatCheck> additionalChecks = new ArrayList<>();
 
-        private Builder() {
-        }
+        private Builder() {}
 
         public Builder config(CatACConfig config) {
             this.config = Objects.requireNonNull(config, "config");

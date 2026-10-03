@@ -11,7 +11,8 @@ final class LatencyTracker {
     private final long timeoutNanos;
     private int nextProbeId;
     private int writeIndex;
-    private long nextProbeNanos;
+    private long lastProbeNanos;
+    private boolean probed;
     private long lastRttNanos = -1L;
     private double roundTripMillis = -1.0;
     private double jitterMillis = -1.0;
@@ -25,17 +26,18 @@ final class LatencyTracker {
 
     int createProbe(long nowNanos, boolean force) {
         expire(nowNanos);
-        if (!force && nowNanos < nextProbeNanos) {
+        if (!force && probed && nowNanos - lastProbeNanos < intervalNanos) {
             return NO_PROBE;
         }
         int id = ++nextProbeId;
-        if (id == NO_PROBE) {
+        if (id == NO_PROBE || id == -1) {
             id = ++nextProbeId;
         }
         probeIds[writeIndex] = id;
         sentNanos[writeIndex] = nowNanos;
         writeIndex = (writeIndex + 1) % MAX_PENDING;
-        nextProbeNanos = nowNanos + intervalNanos;
+        lastProbeNanos = nowNanos;
+        probed = true;
         return id;
     }
 
@@ -51,10 +53,14 @@ final class LatencyTracker {
             }
             if (lastRttNanos >= 0L) {
                 double deltaMillis = Math.abs(elapsed - lastRttNanos) / 1_000_000.0;
-                jitterMillis = jitterMillis < 0.0 ? deltaMillis : jitterMillis * 0.8 + deltaMillis * 0.2;
+                jitterMillis =
+                        jitterMillis < 0.0 ? deltaMillis : jitterMillis * 0.8 + deltaMillis * 0.2;
             }
             double elapsedMillis = elapsed / 1_000_000.0;
-            roundTripMillis = roundTripMillis < 0.0 ? elapsedMillis : roundTripMillis * 0.8 + elapsedMillis * 0.2;
+            roundTripMillis =
+                    roundTripMillis < 0.0
+                            ? elapsedMillis
+                            : roundTripMillis * 0.8 + elapsedMillis * 0.2;
             lastRttNanos = elapsed;
             samples++;
             return true;
@@ -79,7 +85,15 @@ final class LatencyTracker {
         }
     }
 
-    boolean available() { return samples > 0; }
-    double roundTripMillis() { return roundTripMillis; }
-    double jitterMillis() { return jitterMillis; }
+    boolean available() {
+        return samples > 0;
+    }
+
+    double roundTripMillis() {
+        return roundTripMillis;
+    }
+
+    double jitterMillis() {
+        return jitterMillis;
+    }
 }

@@ -12,20 +12,50 @@ final class EnforcementMetrics {
     private final LongAdder floodDrops = new LongAdder();
     private final LongAdder floodKicks = new LongAdder();
 
-    void violationSample() { violationSamples.increment(); }
-    void alert() { alerts.increment(); }
+    void violationSample() {
+        violationSamples.increment();
+    }
+
+    void alert() {
+        alerts.increment();
+    }
+
     void decision(boolean cancel, boolean setback, boolean kick) {
         if (cancel) cancelledPackets.increment();
         if (setback) setbacks.increment();
         if (kick) kicks.increment();
     }
-    void flood(boolean kick) { floodDrops.increment(); if (kick) floodKicks.increment(); }
 
-    long violationSamples() { return violationSamples.sum(); }
-    long alerts() { return alerts.sum(); }
-    long cancelledPackets() { return cancelledPackets.sum(); }
-    long setbacks() { return setbacks.sum(); }
-    long kicks() { return kicks.sum(); }
-    long floodDrops() { return floodDrops.sum(); }
-    long floodKicks() { return floodKicks.sum(); }
+    void flood(boolean kick) {
+        floodDrops.increment();
+        if (kick) floodKicks.increment();
+    }
+
+    long violationSamples() {
+        return violationSamples.sum();
+    }
+
+    long alerts() {
+        return alerts.sum();
+    }
+
+    long cancelledPackets() {
+        return cancelledPackets.sum();
+    }
+
+    long setbacks() {
+        return setbacks.sum();
+    }
+
+    long kicks() {
+        return kicks.sum();
+    }
+
+    long floodDrops() {
+        return floodDrops.sum();
+    }
+
+    long floodKicks() {
+        return floodKicks.sum();
+    }
 }

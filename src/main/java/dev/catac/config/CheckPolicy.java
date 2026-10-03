@@ -6,39 +6,63 @@ public record CheckPolicy(
         double setbackBuffer,
         double kickBuffer,
         double decayPerPass,
-        long alertCooldownMillis
-) {
-    public static final CheckPolicy DISABLED = new CheckPolicy(false, 1, 1, 1, 0, 1_000);
+        long alertCooldownMillis,
+        double decayPerSecond) {
+    public static final CheckPolicy DISABLED = new CheckPolicy(false, 1, 1, 1, 0, 1_000, 0);
 
-    public CheckPolicy {
-        requireFinitePositive(alertBuffer, "alertBuffer");
-        requireFinitePositive(setbackBuffer, "setbackBuffer");
-        requireFinitePositive(kickBuffer, "kickBuffer");
-        if (setbackBuffer < alertBuffer) {
-            throw new IllegalArgumentException("setbackBuffer must be >= alertBuffer");
-        }
-        if (kickBuffer < setbackBuffer) {
-            throw new IllegalArgumentException("kickBuffer must be >= setbackBuffer");
-        }
-        if (!Double.isFinite(decayPerPass) || decayPerPass < 0) {
-            throw new IllegalArgumentException("decayPerPass must be finite and >= 0");
-        }
-        if (alertCooldownMillis < 0) {
-            throw new IllegalArgumentException("alertCooldownMillis must be >= 0");
-        }
+    /** Legacy constructor: explicit time decay is derived at two reference samples per second. */
+    public CheckPolicy(
+            boolean enabled,
+            double alert,
+            double setback,
+            double kick,
+            double legacyDecay,
+            long cooldown) {
+        this(enabled, alert, setback, kick, legacyDecay, cooldown, legacyDecay * 2);
     }
 
-    public static CheckPolicy standard(double alertBuffer, double setbackBuffer, double kickBuffer) {
-        return new CheckPolicy(true, alertBuffer, setbackBuffer, kickBuffer, 0.25, 1_000);
+    public CheckPolicy {
+        positive(alertBuffer, "alertBuffer");
+        positive(setbackBuffer, "setbackBuffer");
+        positive(kickBuffer, "kickBuffer");
+        if (setbackBuffer < alertBuffer || kickBuffer < setbackBuffer)
+            throw new IllegalArgumentException("Threshold order");
+        if (!Double.isFinite(decayPerPass)
+                || decayPerPass < 0
+                || !Double.isFinite(decayPerSecond)
+                || decayPerSecond < 0
+                || alertCooldownMillis < 0
+                || alertCooldownMillis > 86_400_000)
+            throw new IllegalArgumentException("Invalid decay/cooldown");
+    }
+
+    public static CheckPolicy standard(double a, double s, double k) {
+        return new CheckPolicy(true, a, s, k, .25, 1_000);
     }
 
     public CheckPolicy disabled() {
-        return new CheckPolicy(false, alertBuffer, setbackBuffer, kickBuffer, decayPerPass, alertCooldownMillis);
+        return new CheckPolicy(
+                false,
+                alertBuffer,
+                setbackBuffer,
+                kickBuffer,
+                decayPerPass,
+                alertCooldownMillis,
+                decayPerSecond);
     }
 
-    private static void requireFinitePositive(double value, String name) {
-        if (!Double.isFinite(value) || value <= 0) {
-            throw new IllegalArgumentException(name + " must be finite and > 0");
-        }
+    public CheckPolicy withTimeDecay(double rate) {
+        return new CheckPolicy(
+                enabled,
+                alertBuffer,
+                setbackBuffer,
+                kickBuffer,
+                decayPerPass,
+                alertCooldownMillis,
+                rate);
+    }
+
+    private static void positive(double n, String name) {
+        if (!Double.isFinite(n) || n <= 0) throw new IllegalArgumentException(name);
     }
 }

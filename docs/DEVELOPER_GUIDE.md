@@ -1,219 +1,102 @@
-# Guía de desarrollo
+# Integración y desarrollo
 
-## Ciclo de vida
+## Ciclo de vida y configuración
 
-1. Inicializa Minestom.
-2. Construye una única instancia de `CatAC`.
-3. Registra checks personalizados antes de `build()`.
-4. Llama a `start()` antes de aceptar jugadores.
-5. Conserva la referencia y llama a `close()` al apagar.
+Inicializa Minestom, construye CatAC, registra checks adicionales antes de `build()`, llama a `start()` y conserva la referencia para `close()`. `CatAC.install(config)` es el atajo. Sólo una instancia puede estar activa; start/stop están serializados. Un bootstrap fallido limpia su EventNode y estado y deja la instancia detenida. Para reinstalar, crea otra instancia.
 
-`CatAC.install(config)` es el atajo para construir e iniciar. No debe instalarse
-dos veces sobre el mismo servidor. La instancia sigue el estado `NEW → STARTED
-→ STOPPED`; después de `close()` no puede reiniciarse. Construye una instancia
-nueva si el host necesita volver a instalar CatAC.
+La configuración es inmutable. Los overrides se validan contra el registro congelado. No existen hot reload, comandos de moderación, base de datos ni panel web incorporados: corresponden al host. El logger del host debe proporcionar su binding de SLF4J; los tests aislados no añaden uno al JAR.
 
-## Estrategia de despliegue
-
-Empieza con `EnforcementMode.MONITOR` y exporta `CatViolationEvent`. Separa los
-datos por check, ping, modo de juego y mecánicas propias. Ajusta políticas sólo
-después de observar percentiles de jugadores legítimos. Activa `SETBACK` por
-familias; reserva `KICK` para señales repetidas y de alta confianza.
-
-## Avisos al jugador
-
-Los avisos de CatAC son intencionalmente escasos: se limitan por jugador y por
-check, con cuatro segundos por defecto. Antes de un kick normal, CatAC exige
-dos avisos para ese mismo check; los paquetes estructuralmente malformados
-siguen siendo una excepción de seguridad. El host controla ambos textos y puede
-silenciar casos concretos con `null`:
+Configura el perfil desde metadatos verificados de la conexión:
 
 ```java
-.warningsBeforeKick(2)
-.playerNoticeCooldown(Duration.ofSeconds(5))
-.playerMessageProvider(notice -> switch (notice.type()) {
-    case WARNING -> Component.text("Detectamos una acción irregular." );
-    case SETBACK -> Component.text("Tu movimiento fue corregido." );
-})
-.kickMessage(Component.text("No pudimos validar varias acciones."))
+.clientProfileProvider(player -> trustedHostMetadata.profileOf(player))
 ```
 
-No uses el proveedor para I/O, bases de datos o formatos costosos: se ejecuta
-en el flujo del evento. Para mensajes por idioma, selecciona el `Component`
-según el locale que el servidor ya conserve para ese jugador.
+Ese identificador representa una función propia del host. No uses brand ni un plugin message enviado por el cliente como prueba del perfil. Si no conoces la compatibilidad, devuelve `ClientProfile.UNKNOWN` y recoge evidencia en monitorización. Las exenciones específicas se solicitan con `catac.exempt(player, checkId, duration)`; no eximen hardening.
 
-## Señuelo de KillAura
+## Extensiones
 
-`AuraDecoyPolicy` activa una sonda privada sólo después de un `combat.reach`
-anómalo. CatAC emite `PlayerInfoUpdatePacket` y `SpawnEntityPacket` únicamente
-al sospechoso, con una entrada no listada, y después destruye el ID y elimina el
-perfil. No registra un `Entity` en la instancia, por lo que ningún otro jugador
-ni mecánica del mundo puede interactuar con el señuelo.
-
-La confirmación requiere simultáneamente: ID exacto, tipo `Attack`, período de
-armado completado, vida vigente y vector de cámara aún opuesto al señuelo. No
-reduzcas `behindDistance` por debajo de 3.5 bloques ni omitas el armado. Respeta
-`EnforcementMode`: en `MONITOR` y `SETBACK` la señal se publica como alerta; en
-`KICK` usa el `kickMessage` propio de la política.
-
-## Denegar daño protegido
-
-`DamageProtectionPolicy` escucha `EntityDamageEvent` de Minestom. Sólo evalúa
-el daño si CatAC había armado antes una guarda para ese atacante y esa víctima;
-por defecto la decisión es `DENY`. El proveedor permite que el servidor
-mantenga la autoridad final:
+Un check implementa exactamente `PacketCheck` o `MovementCheck`. Define un descriptor constante y capacidades explícitas. El registro invoca `descriptor()` una vez y cachea `packetTypes()`; evita resultados variables. Los checks se ejecutan bajo el estado del jugador y deben ser baratos y sin I/O.
 
 ```java
-.damageProtectionPolicy(new DamageProtectionPolicy(
-        true,
-        Duration.ofMillis(500),
-        context -> context.reason().equals("combat.reach")
-                ? DamageDecision.DENY : DamageDecision.ALLOW))
+public final class HostObserver implements PacketCheck {
+    private static final CheckDescriptor INFO = new CheckDescriptor(
+            "host.observer", "Host observer", CheckCategory.PACKET,
+            CheckPolicy.standard(2, 4, 8), false, CheckCapabilities.OBSERVE);
+
+    @Override public CheckDescriptor descriptor() { return INFO; }
+
+    @Override public Set<Class<? extends ClientPacket>> packetTypes() {
+        return Set.of(ClientHeldItemChangePacket.class);
+    }
+
+    @Override public CheckResult evaluate(PlayerPacketEvent event,
+                                         PlayerData data, long nowNanos) {
+        return CheckResult.skip(); // Sustituir por una evaluación del host.
+    }
+}
 ```
 
-Los checks personalizados no deben intentar alterar la salud directamente.
-Después de invalidar su propia acción pueden llamar
-`catac.denyDamage(attacker, victim, duration, "custom.check-id")`. La razón
-debe ser un ID estable (`segmento.segmento`); la guarda coincide con el UUID de
-la víctima y se consume una sola vez.
+El ejemplo consumidor contiene una extensión compilada contra el JAR. Para un fallo numérico, `CheckEvidence(observed, limit, tolerance, model)` usa esquema 1 y números finitos; sólo debe crearse ante detección. Conserva IDs/modelos estables. `skip()` significa que no aplicó; `uncertain(reason)` que faltó confianza; ninguno es un pase.
 
-## Inundación de paquetes
+No teletransportes, kicks o mutaciones de inventario desde `evaluate()`: la capacidad declarada debe gobernar la aplicación. Las extensiones son código confiable del host, no un sandbox que impida realizar llamadas directas a Minestom. No conserves `MovementFrame` mutable, `PlayerData` o eventos para procesarlos en un worker. Exporta snapshots propios inmutables a una cola acotada del host.
 
-`PacketFloodPolicy` es una barrera previa a los listeners vanilla de Minestom,
-no un reemplazo de su red. Mantiene dos token buckets por jugador y no crea
-colas ni tareas: `totalBudget` para todo paquete de Play y `heavyBudget` para
-inventario, plugin messages, libros, autocomplete y edición de carteles. Al
-agotarse, CatAC cancela el paquete; al superar `strikesBeforeKick` en
-`strikeWindow`, expulsa.
+Si un check lanza una excepción, se desactiva globalmente para esa instancia. Consulta `diagnostics()` y corrige el fallo antes de reinstalar. No asumas que `health().healthy()` demuestra que todos los checks siguen activos: los estados se consultan por separado.
 
-La clasificación se ejecuta en el hot path. Debe ser una comprobación de tipo
-constante, sin mapas, I/O o logs. Los paquetes propios quedan en `NORMAL` por
-defecto; usa `HEAVY` sólo cuando tu implementación tenga procesamiento costoso.
-El callback `PacketFloodHandler` y `PacketFloodEvent` se producen únicamente
-en una violación y también deben permanecer sin bloqueo.
+## Orden de eventos y acciones
 
-No intentes usar esta API para interceptar bytes comprimidos o paquetes antes
-de que Minestom los decodifique: eso corresponde al proxy/firewall del host. La
-protección de CatAC asegura que el paquete de Play ya decodificado no alcance
-la lógica de juego de Minestom.
+CatAC evalúa el destino antes de que Minestom lo confirme. Otro listener puede cancelarlo o modificarlo; sólo el destino original que termina aplicado alimenta el modelo. Una modificación del host no convierte automáticamente el nuevo destino en una muestra validada. Cancela o usa la API nativa de teleport cuando el host pretende una transición autoritativa.
 
-## Políticas por check
+`CatViolationEvent.action()` y `DetectionTrace.decision()` son decisiones. Los contadores de cancelación y setback se confirman en la siguiente entrada/EntityTick del jugador. Una cancelación revertida por un listener posterior no incrementa acciones aplicadas. Los listeners que deban observar eventos ya cancelados necesitan la opción nativa `.ignoreCancelled(false)`; no reviertas hardening de forma indiscriminada.
+
+Las acciones de mundo canceladas envían actualización de target/vecino y acknowledgment de secuencia; inventarios obsoletos o inválidos se actualizan desde el estado nativo. CatAC no ejecuta el click de nuevo. El host sigue siendo responsable de permisos de construcción, reglas de sus GUIs, ownership de objetos y acciones custom que no pasan por esos listeners.
+
+## Daño propio y diferido
+
+Si el host impide una acción antes de aplicar daño, no necesita armar una guarda para el ataque que nunca ejecutará. Para daño que se ejecutará después, crea un actionId positivo y único por atacante/sesión, vincula la invalidación y consume esa misma acción antes de aplicar daño:
 
 ```java
-new CheckPolicy(
-        true,  // enabled
-        4.0,   // alertBuffer
-        8.0,   // setbackBuffer
-        24.0,  // kickBuffer
-        0.20,  // decayPerPass
-        1_000  // alertCooldownMillis
-)
+catac.denyDamage(attacker, victim, actionId,
+        Duration.ofMillis(500), "host.invalid-action");
+// En el ejecutor del host, dentro de la duración acordada:
+boolean denied = catac.consumeDamageDenial(attacker, victim, actionId);
+if (!denied) {
+    // Aplicar exclusivamente el daño correspondiente a actionId.
+}
 ```
 
-Una política personalizada se enlaza por ID:
+La guarda es one-shot, acotada y validada antes de modificar estado. No reutilices IDs ni interpretes `false` tras expiración como aprobación del antitrampas: sólo indica ausencia de esa guarda vigente. El host debe conservar su decisión autoritativa si la tarea puede exceder la duración.
 
-```java
-CatACConfig.builder()
-        .policy("combat.reach", CheckPolicy.standard(2, 5, 20))
-        .disableCheck("movement.vertical")
-        .build();
-```
+El overload legado `denyDamage(attacker, victim, duration, reason)` protege el siguiente `EntityDamageEvent` síncrono coincidente; se limpia al inicio del siguiente ataque nativo. **No lo uses para tareas diferidas:** un evento de daño no contiene por sí mismo identidad del ataque. El overload correlacionado no se consume mediante ese evento genérico.
 
-## Exenciones
+`DamageProtectionPolicy` decide sobre guardas explícitas del host en la ruta síncrona. Si el proveedor falla, el estado degradado es visible. Los proveedores/callbacks deben permanecer sin bloqueo y no adquirir el estado de otro jugador mientras tienen el actual.
 
-Usa `ExemptionProvider` para permisos, arenas, estados de minijuego o NPCs:
+## Flood y disponibilidad
 
-```java
-.exemptionProvider((player, checkId) ->
-        player.hasPermission("catac.bypass") ||
-        myGameState.isInCinematic(player))
-```
+El presupuesto actúa tras decodificar el paquete y antes de su lógica nativa de juego. No limita por sí mismo bytes de login, framing, compresión, memoria de decodificación o ataques de red anteriores al core.
 
-Para teletransportes o impulsos personalizados, usa además:
+| Presupuesto predeterminado | Reposición por segundo | Burst |
+|---|---:|---:|
+| Total normal | 160 | 240 |
+| Adicional para paquetes pesados | 24 | 40 |
+| Reserva de control independiente | 32 | 24 |
 
-```java
-catac.exempt(player, Duration.ofMillis(750));
-```
+Control incluye Pong, confirmación de teleport, KeepAlive y acuse de batch de chunks. Se conserva incluso cuando agotan los buckets de gameplay. También es acotado; no admite una inundación ilimitada de controles. El callback/evento de flood tiene cooldown de 1 s predeterminado; no se publica una alerta por cada descarte. Kicks de flood están desactivados por defecto y se habilitan expresamente con `.withKicks(true)`.
 
-CatAC ya observa los teletransportes y velocidades producidos por Minestom. La
-exención manual sólo es necesaria para mecánicas personalizadas que no generen
-esos eventos. Puedes consultar `catac.networkSnapshot(player)` para telemetría;
-no conserves ese snapshot como estado de juego porque representa una lectura.
+`PacketCostClassifier` debe ser una comprobación de tipo o metadatos baratos. Un error vuelve a NORMAL y degrada la salud; no concede una exención. No coloques logs, SQL, HTTP o una cola sin límite en el handler. Las excepciones de callbacks se contabilizan y los logs se limitan por categoría a una vez cada 5 s.
 
-No desactives un check globalmente para resolver una mecánica local: expresa la
-exención en el punto donde el servidor conoce esa mecánica.
+## Señuelo y observadores
 
-## Eventos
+`AuraDecoyPolicy` está desactivada de fábrica. Al activarla, la sonda privada utiliza paquetes dirigidos sólo al sospechoso; no crea un objetivo real en la instancia. Su check sigue la política registrada y `OBSERVE`, incluso en modo `KICK`; su antigua ruta especial de expulsión ya no se usa. Un ataque al ID virtual se impide porque no existe un objetivo nativo legítimo.
 
-Hay dos vías equivalentes para consumir una infracción:
+Los checks ray, medio, descenso, no-slow y knockback también son observadores. No basta cambiar sus umbrales/modo para convertirlos en sancionadores. Una futura promoción exige un modelo y corpus propios, revisión de falsos positivos y un descriptor con nuevas capacidades explícitas.
 
-- `CatACConfig.Builder.violationHandler(...)`, útil para una integración directa;
-- listener global de Minestom para `CatViolationEvent`.
+## Operación y reversión
 
-El evento incluye jugador, descriptor, severidad de la muestra, buffer acumulado,
-evidencia y acción resuelta. La evidencia sirve para depuración; no la uses como
-formato estable de persistencia.
+1. Empieza en `MONITOR`; recoge denominadores de sesiones además de alertas. Consulta salud, estados activos, motivos de abstención y overflows.
+2. Comprueba que teleports, velocidades, atributos y GUIs propios no produzcan errores. Añade fixtures al corpus y fija la configuración del host.
+3. Activa por familia `SETBACK` con un grupo controlado. Investiga cada corrección legítima y compara decisiones con acciones confirmadas.
+4. Sólo habilita `KICK` para evidencia repetida de checks validados, sin desactivar los avisos por accidente. Los valores de fábrica no son una calibración de tu servidor.
+5. Ante fallos de check, inflación de incertidumbre, overflows o aumento de acciones sobre sesiones legítimas: desciende la familia a monitorización, conserva un caso reproducible y corrige antes de promover otra vez.
 
-## Calibración de combate
-
-Empieza con los valores predeterminados de `combatRewindPadding` (50 ms) y
-`combatMaxRewind` (350 ms). El rewind usa la mitad del RTT y el jitter medidos
-por CatAC para elegir un instante objetivo; no incrementa
-`ENTITY_INTERACTION_RANGE`. No subas el máximo para resolver falsos positivos
-sin revisar primero pings reales, historial de entidades, paredes y la
-configuración de visualización de tus instancias.
-
-## Observabilidad
-
-Usa `catac.metrics()` para decidir ajustes de `CheckPolicy` y del modo de
-enforcement. Empieza con `MONITOR`, observa `violationSamples` y `alerts` por
-check a través de tu `ViolationHandler`, y recién entonces configura acciones
-de cancelación, setback o kick. Las métricas son acumulativas durante la vida
-de la instancia; reiniciar CatAC inicia una serie nueva.
-
-## Checks personalizados
-
-Un check debe:
-
-- tener un ID estable y único;
-- ser determinista y no bloquear;
-- evitar streams, colecciones temporales, logs síncronos e I/O en `evaluate`;
-- usar el contexto existente antes de volver a consultar el mundo;
-- devolver `pass()` ante una situación física que no puede modelar;
-- reservar `cancel()` para una acción que no debe llegar al juego;
-- reservar `disconnect()` para entradas hostiles que rompen invariantes.
-
-Cada check debe implementar exactamente una interfaz, `PacketCheck` o
-`MovementCheck`. CatAC desactiva un check que lance una excepción para no dejar
-que una extensión interrumpa el hilo de juego. Esta es una protección de
-disponibilidad, no una sustitución de pruebas: corrige el check y revisa el log.
-
-El callback de infracciones y los listeners de `CatViolationEvent` se ejecutan
-en el flujo del evento. Deben ser cortos y sin I/O bloqueante; entrega el trabajo
-pesado a una cola o executor controlado por el servidor.
-
-Los `MovementCheck` se ejecutan con un `MovementFrame` reutilizado. No conserves
-una referencia al frame fuera de `evaluate`. Si necesitas memoria adicional,
-propón primero extender `PlayerData` con almacenamiento acotado; no uses mapas
-globales sin limpieza.
-
-## Pruebas
-
-```bash
-mvn clean verify
-```
-
-Para un check nuevo añade, como mínimo:
-
-- casos justo por debajo y por encima del umbral;
-- decaimiento y acumulación;
-- ping alto y lag del servidor;
-- teletransporte, velocity y chunk incompleto;
-- mecánicas de bloque relevantes;
-- ausencia de acción en `MONITOR`.
-
-Las pruebas de unidad no reemplazan capturas de tráfico legítimo. Usa el
-paquete `dev.catac.testing` para reproducir una secuencia con marcas de tiempo
-deterministas, generar entradas hostiles y resumir muestras de calibración sin
-añadir trabajo al hilo de juego. La guía completa está en
-[`CALIBRATION.md`](CALIBRATION.md).
+Para revertir un cambio de versión, cierra CatAC, sustituye el JAR/configuración y reinicia el host de forma controlada. No mezcles clases 1.x/2.x ni cambies Minestom sin volver a ejecutar el consumidor y las regresiones.

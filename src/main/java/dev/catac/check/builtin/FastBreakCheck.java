@@ -1,109 +1,123 @@
 package dev.catac.check.builtin;
 
-import dev.catac.api.CheckCategory;
-import dev.catac.api.CheckDescriptor;
-import dev.catac.check.CheckResult;
-import dev.catac.check.PacketCheck;
+import dev.catac.api.*;
+import dev.catac.check.*;
 import dev.catac.config.CheckPolicy;
-import dev.catac.internal.TickHealth;
-import dev.catac.state.DiggingState;
-import dev.catac.state.PlayerData;
-import net.minestom.server.entity.GameMode;
-import net.minestom.server.entity.Player;
+import dev.catac.internal.*;
+import dev.catac.state.*;
+
+import net.minestom.server.entity.*;
 import net.minestom.server.event.player.PlayerPacketEvent;
-import net.minestom.server.instance.Instance;
 import net.minestom.server.instance.block.Block;
+import net.minestom.server.network.packet.client.ClientPacket;
 import net.minestom.server.network.packet.client.play.ClientPlayerActionPacket;
 import net.minestom.server.utils.block.BlockBreakCalculation;
 
+import java.util.Set;
+
 public final class FastBreakCheck implements PacketCheck {
-    private static final long TICK_NANOS = 50_000_000L;
-    private static final CheckDescriptor DESCRIPTOR = new CheckDescriptor(
-            "world.fast-break",
-            "Fast break",
-            CheckCategory.WORLD,
-            new CheckPolicy(true, 3, 6, 18, 0.2, 1_000),
-            false
-    );
-
+    private static final CheckDescriptor D =
+            new CheckDescriptor(
+                    "world.fast-break",
+                    "Dig operation timing",
+                    CheckCategory.WORLD,
+                    new CheckPolicy(true, 3, 6, 18, .2, 1000),
+                    false);
     private final TickHealth tickHealth;
+    private final CollisionAnalyzer collisions = new CollisionAnalyzer();
 
-    public FastBreakCheck(TickHealth tickHealth) {
-        this.tickHealth = tickHealth;
+    public FastBreakCheck(TickHealth health) {
+        tickHealth = health;
     }
 
-    @Override
     public CheckDescriptor descriptor() {
-        return DESCRIPTOR;
+        return D;
     }
 
-    @Override
-    public CheckResult evaluate(PlayerPacketEvent event, PlayerData data, long nowNanos) {
-        if (!(event.getPacket() instanceof ClientPlayerActionPacket packet)) {
-            return CheckResult.pass();
-        }
-        Player player = event.getPlayer();
-        DiggingState digging = data.digging();
-
-        return switch (packet.status()) {
-            case STARTED_DIGGING -> {
-                start(player, packet, digging, nowNanos);
-                yield CheckResult.pass();
-            }
-            case CANCELLED_DIGGING -> {
-                digging.clear();
-                yield CheckResult.pass();
-            }
-            case FINISHED_DIGGING -> finish(player, packet, digging, nowNanos);
-            default -> CheckResult.pass();
-        };
+    public Set<Class<? extends ClientPacket>> packetTypes() {
+        return Set.of(ClientPlayerActionPacket.class);
     }
 
-    private void start(Player player, ClientPlayerActionPacket packet, DiggingState digging, long nowNanos) {
-        if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) {
-            digging.clear();
-            return;
-        }
-        Instance instance = player.getInstance();
-        if (instance == null || !instance.isChunkLoaded(packet.blockPosition())) {
-            digging.clear();
-            return;
-        }
-        Block block = instance.getBlock(packet.blockPosition(), Block.Getter.Condition.TYPE);
-        int expectedTicks = BlockBreakCalculation.breakTicks(block, player);
-        if (expectedTicks <= 0 || expectedTicks == BlockBreakCalculation.UNBREAKABLE) {
-            digging.clear();
-            return;
-        }
-        digging.start(packet.blockPosition().blockX(), packet.blockPosition().blockY(),
-                packet.blockPosition().blockZ(), expectedTicks, nowNanos);
-    }
-
-    private CheckResult finish(Player player, ClientPlayerActionPacket packet,
-                               DiggingState digging, long nowNanos) {
-        if (!digging.matches(packet.blockPosition().blockX(), packet.blockPosition().blockY(),
-                packet.blockPosition().blockZ())) {
-            digging.clear();
-            return CheckResult.cancel(1.0, "finish-digging without a matching start");
-        }
-        if (tickHealth.isLagCompensating(nowNanos)) {
-            digging.clear();
+    public CheckResult evaluate(PlayerPacketEvent e, PlayerData d, long now) {
+        if (!(e.getPacket() instanceof ClientPlayerActionPacket p)) return CheckResult.skip();
+        Player player = e.getPlayer();
+        DiggingState state = d.digging();
+        if (p.status() == ClientPlayerActionPacket.Status.CANCELLED_DIGGING) {
+            state.clear();
             return CheckResult.pass();
         }
-
-        int expected = digging.expectedTicks();
-        long elapsedNanos = Math.max(0L, nowNanos - digging.startedNanos());
-        int elapsedTicks = (int) (elapsedNanos / TICK_NANOS);
-        int latencyTicks = Math.max(0, (int) Math.ceil(player.getLatency() / 50.0));
-        int tolerance = 2 + latencyTicks;
-        digging.clear();
-
-        if (elapsedTicks + tolerance >= expected) {
+        if (p.status() != ClientPlayerActionPacket.Status.STARTED_DIGGING
+                && p.status() != ClientPlayerActionPacket.Status.FINISHED_DIGGING)
+            return CheckResult.skip();
+        if (player.getGameMode() == GameMode.CREATIVE
+                || player.getGameMode() == GameMode.SPECTATOR) {
+            state.clear();
+            return CheckResult.skip();
+        }
+        var world = player.getInstance();
+        if (world == null
+                || !world.isChunkLoaded(p.blockPosition())
+                || !world.isChunkLoaded(player.getPosition())) {
+            state.clear();
+            return CheckResult.uncertainCancel(SkipReason.WORLD_UNAVAILABLE);
+        }
+        Block block = world.getBlock(p.blockPosition(), Block.Getter.Condition.TYPE);
+        int expected = BlockBreakCalculation.breakTicks(block, player);
+        if (expected == BlockBreakCalculation.UNBREAKABLE) {
+            state.clear();
+            return CheckResult.uncertainCancel(SkipReason.UNMODELED);
+        }
+        if (expected == 0) {
+            state.clear();
             return CheckResult.pass();
         }
-        int missingTicks = expected - elapsedTicks - tolerance;
-        double severity = Math.min(8.0, 1.0 + missingTicks / Math.max(1.0, expected * 0.2));
-        return CheckResult.cancel(severity,
-                "elapsed=" + elapsedTicks + "t expected=" + expected + "t tolerance=" + tolerance + "t");
+        CollisionSnapshot support = new CollisionSnapshot();
+        collisions.analyze(player, player.getPosition(), support);
+        if (!support.complete()) {
+            state.clear();
+            return CheckResult.uncertainCancel(SkipReason.WORLD_UNAVAILABLE);
+        }
+        // Minestom's native break calculation reads the client-derived onGround flag.
+        if (!support.supported() && player.isOnGround())
+            expected = (int) Math.min(Integer.MAX_VALUE, (long) expected * 5);
+        if (p.status() == ClientPlayerActionPacket.Status.STARTED_DIGGING) {
+            state.start(
+                    p.blockPosition().blockX(),
+                    p.blockPosition().blockY(),
+                    p.blockPosition().blockZ(),
+                    expected,
+                    world,
+                    block.stateId(),
+                    player.getItemInMainHand(),
+                    now);
+            return CheckResult.pass();
+        }
+        if (!state.matches(
+                p.blockPosition().blockX(),
+                p.blockPosition().blockY(),
+                p.blockPosition().blockZ())) {
+            state.clear();
+            return CheckResult.cancel(1, "finish without matching dig start");
+        }
+        if (!state.contextMatches(world, block.stateId(), player.getItemInMainHand())
+                || expected != state.expectedTicks()) {
+            state.clear();
+            return CheckResult.uncertainCancel(SkipReason.DISCONTINUITY);
+        }
+        if (tickHealth.isLagCompensating(now)) {
+            state.clear();
+            return CheckResult.uncertainCancel(SkipReason.SERVER_LAG);
+        }
+        long elapsed = now - state.startedNanos();
+        int required = state.expectedTicks();
+        state.clear();
+        if (elapsed < 0 || elapsed > 90_000_000_000L)
+            return CheckResult.uncertainCancel(SkipReason.DISCONTINUITY);
+        double elapsedTicks = elapsed / 50_000_000.0;
+        double tolerance = 2 + Math.min(2, d.synchronization().latencyAllowanceMillis() / 50.0);
+        if (elapsedTicks + tolerance >= required) return CheckResult.pass();
+        return CheckResult.cancel(
+                Math.min(8, 1 + (required - elapsedTicks - tolerance) / Math.max(1, required * .2)),
+                new CheckEvidence(elapsedTicks, required, tolerance, "bounded-dig-ticks"));
     }
 }

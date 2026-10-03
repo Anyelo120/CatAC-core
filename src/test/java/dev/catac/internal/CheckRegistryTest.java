@@ -1,5 +1,10 @@
 package dev.catac.internal;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import dev.catac.api.CheckCategory;
 import dev.catac.api.CheckDescriptor;
 import dev.catac.check.CatCheck;
@@ -9,17 +14,17 @@ import dev.catac.config.CatACConfig;
 import dev.catac.config.CheckPolicy;
 import dev.catac.state.MovementFrame;
 import dev.catac.state.PlayerData;
+
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 class CheckRegistryTest {
-    private static final CheckDescriptor DESCRIPTOR = new CheckDescriptor(
-            "test.movement", "Test movement", CheckCategory.MOVEMENT,
-            CheckPolicy.standard(2, 4, 8), true);
+    private static final CheckDescriptor DESCRIPTOR =
+            new CheckDescriptor(
+                    "test.movement",
+                    "Test movement",
+                    CheckCategory.MOVEMENT,
+                    CheckPolicy.standard(2, 4, 8),
+                    true);
 
     @Test
     void invalidCheckDoesNotMutateRegistry() {
@@ -38,7 +43,8 @@ class CheckRegistryTest {
         registry.register(new TestMovementCheck());
 
         assertEquals(1, registry.size());
-        assertThrows(IllegalArgumentException.class, () -> registry.register(new TestMovementCheck()));
+        assertThrows(
+                IllegalArgumentException.class, () -> registry.register(new TestMovementCheck()));
 
         registry.freeze();
         assertTrue(registry.isFrozen());

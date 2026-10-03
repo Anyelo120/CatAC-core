@@ -1,153 +1,165 @@
 package dev.catac.internal;
 
 import dev.catac.state.CollisionSnapshot;
-import net.minestom.server.collision.BoundingBox;
-import net.minestom.server.coordinate.Pos;
-import net.minestom.server.coordinate.Vec;
+
+import net.minestom.server.collision.*;
+import net.minestom.server.coordinate.*;
 import net.minestom.server.entity.Player;
+import net.minestom.server.entity.attribute.Attribute;
 import net.minestom.server.instance.Instance;
 import net.minestom.server.instance.block.Block;
 
-public final class CollisionAnalyzer {
-    private static final double EDGE_EPSILON = 1.0E-7;
-    private static final double SUPPORT_EPSILON = 0.05;
-    private static final double SWEEP_STEP = 0.20;
-    private static final int MAX_SWEEP_STEPS = 32;
+import java.util.ArrayList;
+import java.util.List;
 
-    public void analyze(Player player, Pos position, CollisionSnapshot snapshot) {
-        analyze(player, position, position, snapshot);
+/** Continuous native shape tests with a strictly bounded broad phase. */
+public final class CollisionAnalyzer {
+    public static final int MAX_BLOCK_READS = 512;
+    private static final double EPS = 1e-7;
+
+    public void analyze(Player player, Pos pos, CollisionSnapshot s) {
+        analyze(player, pos, pos, s);
     }
 
-    /**
-     * Samples every AABB crossed by a move. A 0.20-block step catches thin
-     * shapes and prevents an invalid large packet from skipping a wall while
-     * retaining a strict upper bound on world reads.
-     */
-    public void analyze(Player player, Pos from, Pos position, CollisionSnapshot snapshot) {
-        snapshot.reset();
-        Instance instance = player.getInstance();
-        if (instance == null) {
-            snapshot.complete(false);
+    public void analyze(Player player, Pos from, Pos to, CollisionSnapshot s) {
+        s.reset();
+        Instance world = player.getInstance();
+        if (world == null) {
+            s.complete(false);
             return;
         }
-
         BoundingBox box = player.getBoundingBox();
-        int minX = floor(position.x() + box.minX() + EDGE_EPSILON);
-        int maxX = floor(position.x() + box.maxX() - EDGE_EPSILON);
-        int minY = floor(position.y() + box.minY() + EDGE_EPSILON);
-        int maxY = floor(position.y() + box.maxY() - EDGE_EPSILON);
-        int minZ = floor(position.z() + box.minZ() + EDGE_EPSILON);
-        int maxZ = floor(position.z() + box.maxZ() - EDGE_EPSILON);
-
-        for (int x = minX; x <= maxX; x++) {
+        double step = player.getAttributeValue(Attribute.STEP_HEIGHT);
+        if (!Double.isFinite(step) || step < 0 || step > 16) {
+            s.complete(false);
+            return;
+        }
+        int minX = floor(Math.min(from.x(), to.x()) + box.minX() + EPS),
+                maxX = floor(Math.max(from.x(), to.x()) + box.maxX() - EPS);
+        int minZ = floor(Math.min(from.z(), to.z()) + box.minZ() + EPS),
+                maxZ = floor(Math.max(from.z(), to.z()) + box.maxZ() - EPS);
+        // Shapes such as fences extend above their block cell.
+        int minY = floor(Math.min(from.y(), to.y()) + box.minY() - .051) - 1;
+        int maxY = floor(Math.max(from.y(), to.y()) + box.maxY() + step - EPS);
+        if (maxX - minX + 1 > MAX_BLOCK_READS
+                || maxY - minY + 1 > MAX_BLOCK_READS
+                || maxZ - minZ + 1 > MAX_BLOCK_READS) {
+            s.complete(false);
+            return;
+        }
+        long cells = (long) (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
+        if (cells <= 0 || cells > MAX_BLOCK_READS) {
+            s.complete(false);
+            return;
+        }
+        List<Cell> solid = new ArrayList<>();
+        boolean surface = false;
+        Pos lowered = to.sub(0, .05, 0);
+        for (int x = minX; x <= maxX; x++)
             for (int z = minZ; z <= maxZ; z++) {
-                if (!instance.isChunkLoaded(x >> 4, z >> 4)) {
-                    snapshot.complete(false);
-                    continue;
+                if (!world.isChunkLoaded(x >> 4, z >> 4)) {
+                    s.complete(false);
+                    return;
                 }
                 for (int y = minY; y <= maxY; y++) {
-                    Block block = instance.getBlock(x, y, z, Block.Getter.Condition.TYPE);
-                    inspectMedium(block, snapshot);
-                    if (!block.registry().collisionShape().relativeEnd().isZero() &&
-                            block.registry().collisionShape().intersectBox(
-                                    new Vec(position.x() - x, position.y() - y, position.z() - z), box)) {
-                        snapshot.insideSolid(true);
+                    Block block = world.getBlock(x, y, z, Block.Getter.Condition.TYPE);
+                    Shape shape = block.registry().collisionShape();
+                    Vec p = new Vec(x, y, z);
+                    // Inspect medium only in cells touched by the destination body.
+                    if (box.intersectBox(to.sub(p), new BoundingBox(1, 1, 1, Vec.ZERO)))
+                        inspectMedium(block, s);
+                    if (shape.relativeEnd().isZero()) continue;
+                    solid.add(new Cell(p, shape));
+                    if (shape.intersectBox(to.sub(p), box)) s.insideSolid(true);
+                    if (shape.intersectBox(lowered.sub(p), box)
+                            && !shape.intersectBox(to.sub(p), box)) {
+                        s.supported(true);
+                        if (!surface) {
+                            s.surfaceFriction(block.registry().friction());
+                            s.surfaceSpeedFactor(block.registry().speedFactor());
+                            surface = true;
+                        } else {
+                            s.surfaceFriction(
+                                    Math.max(s.surfaceFriction(), block.registry().friction()));
+                            s.surfaceSpeedFactor(
+                                    Math.max(
+                                            s.surfaceSpeedFactor(),
+                                            block.registry().speedFactor()));
+                        }
+                        inspectMedium(block, s);
                     }
                 }
             }
+        if (from.samePoint(to)) return;
+        if (intersects(solid, box, from)) {
+            s.complete(false);
+            return;
         }
-
-        Pos lowered = position.sub(0.0, SUPPORT_EPSILON, 0.0);
-        int supportY = floor(position.y() + box.minY() - SUPPORT_EPSILON);
-        float highestFriction = 0.6f;
-        float highestSpeedFactor = 1.0f;
-        for (int x = minX; x <= maxX; x++) {
-            for (int z = minZ; z <= maxZ; z++) {
-                if (!instance.isChunkLoaded(x >> 4, z >> 4)) {
-                    snapshot.complete(false);
-                    continue;
-                }
-                Block block = instance.getBlock(x, supportY, z, Block.Getter.Condition.TYPE);
-                if (block.registry().collisionShape().relativeEnd().isZero()) {
-                    continue;
-                }
-                if (block.registry().collisionShape().intersectBox(
-                        new Vec(lowered.x() - x, lowered.y() - supportY, lowered.z() - z), box)) {
-                    snapshot.supported(true);
-                    highestFriction = Math.max(highestFriction, block.registry().friction());
-                    highestSpeedFactor = Math.max(highestSpeedFactor, block.registry().speedFactor());
-                    inspectMedium(block, snapshot);
-                }
-            }
+        if (clear(solid, box, from, to)) return;
+        // Vanilla moves on separate axes. A diagonal straight sweep alone would reject legal corner
+        // movement.
+        Pos yFirst = from.withY(to.y()), xFirst = yFirst.withX(to.x());
+        Pos zFirst = yFirst.withZ(to.z());
+        if (clear(solid, box, from, yFirst)
+                && ((clear(solid, box, yFirst, xFirst) && clear(solid, box, xFirst, to))
+                        || (clear(solid, box, yFirst, zFirst) && clear(solid, box, zFirst, to))))
+            return;
+        // Verify a bounded step route: up, horizontal, down; no destination penetration.
+        if (step > 0
+                && to.y() - from.y() >= -EPS
+                && to.y() - from.y() <= step + EPS
+                && !s.insideSolid()) {
+            Pos raised = from.add(0, step, 0), across = to.withY(from.y() + step);
+            if (clear(solid, box, from, raised)
+                    && clear(solid, box, raised, across)
+                    && clear(solid, box, across, to)) return;
         }
-        snapshot.surfaceFriction(highestFriction);
-        snapshot.surfaceSpeedFactor(highestSpeedFactor);
-
-        double distance = Math.max(Math.abs(position.x() - from.x()),
-                Math.max(Math.abs(position.y() - from.y()), Math.abs(position.z() - from.z())));
-        int steps = Math.min(MAX_SWEEP_STEPS, Math.max(1, (int) Math.ceil(distance / SWEEP_STEP)));
-        for (int step = 1; step < steps; step++) {
-            double ratio = (double) step / steps;
-            if (intersectsSolid(player, instance, snapshot,
-                    from.x() + (position.x() - from.x()) * ratio,
-                    from.y() + (position.y() - from.y()) * ratio,
-                    from.z() + (position.z() - from.z()) * ratio)) {
-                snapshot.sweptIntoSolid(true);
-                return;
-            }
-            if (!snapshot.complete()) {
-                return;
-            }
-        }
+        s.sweptIntoSolid(true);
     }
 
-    private static boolean intersectsSolid(Player player, Instance instance, CollisionSnapshot snapshot,
-                                           double x, double y, double z) {
-        BoundingBox box = player.getBoundingBox();
-        int minX = floor(x + box.minX() + EDGE_EPSILON);
-        int maxX = floor(x + box.maxX() - EDGE_EPSILON);
-        int minY = floor(y + box.minY() + EDGE_EPSILON);
-        int maxY = floor(y + box.maxY() - EDGE_EPSILON);
-        int minZ = floor(z + box.minZ() + EDGE_EPSILON);
-        int maxZ = floor(z + box.maxZ() - EDGE_EPSILON);
-        for (int blockX = minX; blockX <= maxX; blockX++) {
-            for (int blockZ = minZ; blockZ <= maxZ; blockZ++) {
-                if (!instance.isChunkLoaded(blockX >> 4, blockZ >> 4)) {
-                    snapshot.complete(false);
-                    return false;
-                }
-                for (int blockY = minY; blockY <= maxY; blockY++) {
-                    Block block = instance.getBlock(blockX, blockY, blockZ, Block.Getter.Condition.TYPE);
-                    if (!block.registry().collisionShape().relativeEnd().isZero() &&
-                            block.registry().collisionShape().intersectBox(
-                                    new Vec(x - blockX, y - blockY, z - blockZ), box)) {
-                        return true;
-                    }
-                }
-            }
-        }
+    private static boolean intersects(List<Cell> cells, BoundingBox box, Pos p) {
+        for (Cell c : cells) if (c.shape.intersectBox(p.sub(c.pos), box)) return true;
         return false;
     }
 
-    private static void inspectMedium(Block block, CollisionSnapshot snapshot) {
-        if (block.isLiquid()) {
-            snapshot.touchingLiquid(true);
-        }
-        int id = block.id();
-        if (id == Block.LADDER.id() || id == Block.VINE.id() ||
-                id == Block.WEEPING_VINES.id() || id == Block.WEEPING_VINES_PLANT.id() ||
-                id == Block.TWISTING_VINES.id() || id == Block.TWISTING_VINES_PLANT.id() ||
-                id == Block.SCAFFOLDING.id()) {
-            snapshot.touchingClimbable(true);
-        }
-        if (id == Block.COBWEB.id() || id == Block.POWDER_SNOW.id() ||
-                id == Block.SWEET_BERRY_BUSH.id() || id == Block.HONEY_BLOCK.id() ||
-                id == Block.SLIME_BLOCK.id()) {
-            snapshot.touchingSlowBlock(true);
-        }
+    private static boolean clear(List<Cell> cells, BoundingBox box, Pos from, Pos to) {
+        Vec delta = new Vec(to.x() - from.x(), to.y() - from.y(), to.z() - from.z());
+        if (delta.isZero()) return !intersects(cells, box, to);
+        for (Cell c : cells) if (swept(c.shape, c.pos, box, from, delta)) return false;
+        return true;
     }
 
-    private static int floor(double value) {
-        return (int) Math.floor(value);
+    public static boolean swept(
+            Shape shape, Point shapePos, BoundingBox box, Point from, Point delta) {
+        box =
+                new BoundingBox(
+                        box.relativeStart().add(EPS, EPS, EPS),
+                        box.relativeEnd().sub(EPS, EPS, EPS));
+        // Native RayUtils moves collision time back by 0.99999; exclude an endpoint-only contact.
+        SweepResult result = new SweepResult(1 - 2e-5, 0, 0, 0, null, 0, 0, 0, 0, 0, 0);
+        return shape.intersectBoxSwept(from, delta, shapePos, box, result);
+    }
+
+    private record Cell(Vec pos, Shape shape) {}
+
+    private static int floor(double x) {
+        return (int) Math.floor(x);
+    }
+
+    private static void inspectMedium(Block b, CollisionSnapshot s) {
+        if (b.isLiquid()) s.touchingLiquid(true);
+        int id = b.id();
+        if (id == Block.LADDER.id()
+                || id == Block.VINE.id()
+                || id == Block.WEEPING_VINES.id()
+                || id == Block.WEEPING_VINES_PLANT.id()
+                || id == Block.TWISTING_VINES.id()
+                || id == Block.TWISTING_VINES_PLANT.id()
+                || id == Block.SCAFFOLDING.id()) s.touchingClimbable(true);
+        if (id == Block.COBWEB.id()
+                || id == Block.POWDER_SNOW.id()
+                || id == Block.SWEET_BERRY_BUSH.id()
+                || id == Block.HONEY_BLOCK.id()
+                || id == Block.SLIME_BLOCK.id()) s.touchingSlowBlock(true);
     }
 }

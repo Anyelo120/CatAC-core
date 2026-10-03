@@ -1,12 +1,13 @@
 package dev.catac.state;
 
-import dev.catac.api.PacketCost;
-import dev.catac.config.PacketBudget;
-import org.junit.jupiter.api.Test;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import dev.catac.api.PacketCost;
+import dev.catac.config.PacketBudget;
+
+import org.junit.jupiter.api.Test;
 
 class PacketFloodStateTest {
     private static final PacketBudget TOTAL = new PacketBudget(10, 10);

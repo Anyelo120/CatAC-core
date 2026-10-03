@@ -9,18 +9,32 @@ public record CheckDescriptor(
         String displayName,
         CheckCategory category,
         CheckPolicy defaultPolicy,
-        boolean setbackEligible
-) {
+        boolean setbackEligible,
+        CheckCapabilities capabilities) {
+    public CheckDescriptor(
+            String id,
+            String displayName,
+            CheckCategory category,
+            CheckPolicy policy,
+            boolean setbackEligible) {
+        this(
+                id,
+                displayName,
+                category,
+                policy,
+                setbackEligible,
+                setbackEligible ? CheckCapabilities.MOVEMENT : CheckCapabilities.PACKET);
+    }
+
     public CheckDescriptor {
-        Objects.requireNonNull(id, "id");
-        Objects.requireNonNull(displayName, "displayName");
-        Objects.requireNonNull(category, "category");
-        Objects.requireNonNull(defaultPolicy, "defaultPolicy");
-        if (!id.matches("[a-z0-9]+(?:[._-][a-z0-9]+)*")) {
-            throw new IllegalArgumentException("Invalid check id: " + id);
-        }
-        if (displayName.isBlank()) {
-            throw new IllegalArgumentException("displayName cannot be blank");
-        }
+        Objects.requireNonNull(id);
+        Objects.requireNonNull(displayName);
+        Objects.requireNonNull(category);
+        Objects.requireNonNull(defaultPolicy);
+        Objects.requireNonNull(capabilities);
+        if (!id.matches("[a-z0-9]+(?:[._-][a-z0-9]+)*") || displayName.isBlank())
+            throw new IllegalArgumentException("Invalid descriptor");
+        if (setbackEligible != capabilities.correctMovement())
+            throw new IllegalArgumentException("Inconsistent correction capability");
     }
 }

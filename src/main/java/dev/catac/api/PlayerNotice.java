@@ -11,8 +11,7 @@ public record PlayerNotice(
         PlayerNoticeType type,
         double severity,
         double buffer,
-        int warningNumber
-) {
+        int warningNumber) {
     public PlayerNotice {
         Objects.requireNonNull(player, "player");
         Objects.requireNonNull(check, "check");

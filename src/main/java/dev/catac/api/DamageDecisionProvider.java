@@ -1,8 +1,8 @@
 package dev.catac.api;
 
 /**
- * Lets the host keep or deny damage tied to an action CatAC already rejected.
- * It executes on the entity damage event and must not block.
+ * Lets the host keep or deny damage tied to an action CatAC already rejected. It executes on the
+ * entity damage event and must not block.
  */
 @FunctionalInterface
 public interface DamageDecisionProvider {

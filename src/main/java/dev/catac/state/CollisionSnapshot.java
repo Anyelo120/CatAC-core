@@ -23,6 +23,18 @@ public final class CollisionSnapshot {
         surfaceSpeedFactor = 1.0f;
     }
 
+    public void copyFrom(CollisionSnapshot s) {
+        complete = s.complete;
+        supported = s.supported;
+        insideSolid = s.insideSolid;
+        sweptIntoSolid = s.sweptIntoSolid;
+        touchingLiquid = s.touchingLiquid;
+        touchingClimbable = s.touchingClimbable;
+        touchingSlowBlock = s.touchingSlowBlock;
+        surfaceFriction = s.surfaceFriction;
+        surfaceSpeedFactor = s.surfaceSpeedFactor;
+    }
+
     public boolean complete() {
         return complete;
     }
@@ -48,8 +60,13 @@ public final class CollisionSnapshot {
     }
 
     /** True when an intermediate AABB in the movement path touched a solid shape. */
-    public boolean sweptIntoSolid() { return sweptIntoSolid; }
-    public void sweptIntoSolid(boolean sweptIntoSolid) { this.sweptIntoSolid = sweptIntoSolid; }
+    public boolean sweptIntoSolid() {
+        return sweptIntoSolid;
+    }
+
+    public void sweptIntoSolid(boolean sweptIntoSolid) {
+        this.sweptIntoSolid = sweptIntoSolid;
+    }
 
     public boolean touchingLiquid() {
         return touchingLiquid;

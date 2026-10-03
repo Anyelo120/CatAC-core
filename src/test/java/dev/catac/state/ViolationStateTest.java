@@ -1,10 +1,10 @@
 package dev.catac.state;
 
-import org.junit.jupiter.api.Test;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.Test;
 
 class ViolationStateTest {
     @Test
@@ -32,8 +32,10 @@ class ViolationStateTest {
         ViolationState state = new ViolationState();
 
         assertTrue(state.canNotifyPlayer(1_000, 500));
+        state.warningSent();
         assertFalse(state.canNotifyPlayer(1_200, 500));
         assertTrue(state.canNotifyPlayer(1_500, 500));
+        state.warningSent();
         assertEquals(2, state.playerWarnings());
     }
 }

@@ -11,13 +11,13 @@ import dev.catac.state.MovementFrame;
 import dev.catac.state.PlayerData;
 
 public final class GroundSpoofCheck implements MovementCheck {
-    private static final CheckDescriptor DESCRIPTOR = new CheckDescriptor(
-            "movement.ground-spoof",
-            "Ground spoof",
-            CheckCategory.MOVEMENT,
-            new CheckPolicy(true, 5, 10, 30, 0.25, 1_200),
-            true
-    );
+    private static final CheckDescriptor DESCRIPTOR =
+            new CheckDescriptor(
+                    "movement.ground-spoof",
+                    "Ground spoof",
+                    CheckCategory.MOVEMENT,
+                    new CheckPolicy(true, 5, 10, 30, 0.25, 1_200),
+                    true);
 
     @Override
     public CheckDescriptor descriptor() {
@@ -27,15 +27,21 @@ public final class GroundSpoofCheck implements MovementCheck {
     @Override
     public CheckResult evaluate(MovementFrame frame, PlayerData data) {
         CollisionSnapshot collision = frame.collision();
-        if (MovementExemptions.physicalBypass(frame.player(), collision) || collision.insideSolid()) {
-            return CheckResult.pass();
+        if (MovementExemptions.physicalBypass(frame.player(), collision)
+                || collision.insideSolid()) {
+            return CheckResult.uncertain(dev.catac.check.SkipReason.UNMODELED);
         }
-        if (frame.clientOnGround() && !collision.supported() && data.airFrames() > 2 &&
-                data.prediction().initialized() && !data.prediction().wasSupported() &&
-                Math.abs(frame.deltaY()) > 0.01) {
-            return CheckResult.fail(1.0,
-                    "client claimed ground without collision support; dy=" + frame.deltaY() +
-                            " predicted-air=true");
+        if (frame.clientOnGround()
+                && !collision.supported()
+                && data.airFrames() > 2
+                && data.prediction().initialized()
+                && !data.prediction().wasSupported()
+                && Math.abs(frame.deltaY()) > 0.01) {
+            return CheckResult.fail(
+                    1.0,
+                    "client claimed ground without collision support; dy="
+                            + frame.deltaY()
+                            + " predicted-air=true");
         }
         return CheckResult.pass();
     }

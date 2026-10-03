@@ -1,107 +1,78 @@
 package dev.catac.check.builtin;
 
-import dev.catac.api.CheckCategory;
-import dev.catac.api.CheckDescriptor;
-import dev.catac.check.CheckResult;
-import dev.catac.check.PacketCheck;
-import dev.catac.config.CheckPolicy;
-import dev.catac.config.CatACConfig;
-import dev.catac.internal.CombatGeometry;
-import dev.catac.internal.EntityHistoryManager;
+import dev.catac.api.*;
+import dev.catac.check.*;
+import dev.catac.config.*;
+import dev.catac.internal.*;
 import dev.catac.state.PlayerData;
-import dev.catac.state.PositionHistory;
-import net.minestom.server.collision.BoundingBox;
-import net.minestom.server.coordinate.Pos;
-import net.minestom.server.entity.Entity;
-import net.minestom.server.entity.Player;
+
 import net.minestom.server.entity.attribute.Attribute;
 import net.minestom.server.event.player.PlayerPacketEvent;
-import net.minestom.server.instance.Instance;
+import net.minestom.server.network.packet.client.ClientPacket;
 import net.minestom.server.network.packet.client.play.ClientInteractEntityPacket;
 
-public final class ReachCheck implements PacketCheck {
-    private static final CheckDescriptor DESCRIPTOR = new CheckDescriptor(
-            "combat.reach",
-            "Combat reach",
-            CheckCategory.COMBAT,
-            new CheckPolicy(true, 2, 5, 16, 0.18, 800),
-            false
-    );
+import java.util.Set;
 
-    private final EntityHistoryManager entityHistories;
+public final class ReachCheck implements PacketCheck {
+    private static final CheckDescriptor D =
+            new CheckDescriptor(
+                    "combat.reach",
+                    "Melee range and occlusion",
+                    CheckCategory.COMBAT,
+                    new CheckPolicy(true, 2, 5, 16, .18, 800),
+                    false);
+    private final EntityHistoryManager histories;
     private final CatACConfig config;
 
-    public ReachCheck(EntityHistoryManager entityHistories, CatACConfig config) {
-        this.entityHistories = entityHistories;
+    public ReachCheck(EntityHistoryManager histories, CatACConfig config) {
+        this.histories = histories;
         this.config = config;
     }
 
-    @Override
     public CheckDescriptor descriptor() {
-        return DESCRIPTOR;
+        return D;
     }
 
-    @Override
-    public CheckResult evaluate(PlayerPacketEvent event, PlayerData data, long nowNanos) {
-        if (!(event.getPacket() instanceof ClientInteractEntityPacket packet) ||
-                !(packet.type() instanceof ClientInteractEntityPacket.Attack)) {
-            return CheckResult.pass();
-        }
-
-        Player attacker = event.getPlayer();
-        Instance instance = attacker.getInstance();
-        if (instance == null) {
-            return CheckResult.pass();
-        }
-        Entity target = instance.getEntityById(packet.targetId());
-        if (target == null || target == attacker || !target.isViewer(attacker)) {
-            return CheckResult.pass();
-        }
-
-        Pos attackerPosition = attacker.getPosition();
-        double eyeX = attackerPosition.x();
-        double eyeY = attackerPosition.y() + attacker.getEyeHeight();
-        double eyeZ = attackerPosition.z();
-        BoundingBox targetBox = target.getBoundingBox();
-
-        long rewindNanos = data.synchronization().combatRewindNanos(
-                config.combatRewindPaddingNanos(), config.combatMaxRewindNanos());
-        PositionHistory history = entityHistories.find(target);
-        PositionHistory.RewoundPosition targetPosition = history == null
-                ? new PositionHistory.RewoundPosition(target.getPosition().x(), target.getPosition().y(),
-                target.getPosition().z(), false)
-                : history.rewind(nowNanos - rewindNanos, target.getPosition());
-
-        double distanceSquared = CombatGeometry.distanceSquared(
-                eyeX, eyeY, eyeZ, targetBox, targetPosition.x(), targetPosition.y(), targetPosition.z());
-
-        double distance = Math.sqrt(distanceSquared);
-        double allowed = attacker.getAttributeValue(Attribute.ENTITY_INTERACTION_RANGE) + 0.10;
-        if (distance <= allowed) {
-            double directionDot = CombatGeometry.directionDot(attackerPosition, eyeX, eyeY, eyeZ,
-                    targetBox, targetPosition.x(), targetPosition.y(), targetPosition.z());
-            if (directionDot <= 0.0) {
-                // View direction can be stale for one client tick; reach is
-                // still valid, so do not turn an angle heuristic into a ban.
-                return CheckResult.pass();
-            }
-            CombatGeometry.LineOfSight lineOfSight = CombatGeometry.lineOfSight(instance, eyeX, eyeY, eyeZ,
-                    targetBox, targetPosition.x(), targetPosition.y(), targetPosition.z());
-            if (lineOfSight == CombatGeometry.LineOfSight.BLOCKED) {
-                return CheckResult.fail(1.5, "attack ray intersected a solid collision shape");
-            }
-            return CheckResult.pass();
-        }
-
-        double excess = distance - allowed;
-        double severity = Math.min(8.0, 1.0 + excess * 6.0);
-        return CheckResult.cancel(severity,
-                "reach=" + round(distance) + " allowed=" + round(allowed) +
-                        " rewindMs=" + rewindNanos / 1_000_000L +
-                        " historical=" + targetPosition.historical());
+    public Set<Class<? extends ClientPacket>> packetTypes() {
+        return Set.of(ClientInteractEntityPacket.class);
     }
 
-    private static double round(double value) {
-        return Math.rint(value * 1_000.0) / 1_000.0;
+    public CheckResult evaluate(PlayerPacketEvent e, PlayerData d, long now) {
+        if (!(e.getPacket() instanceof ClientInteractEntityPacket p)
+                || !(p.type() instanceof ClientInteractEntityPacket.Attack))
+            return CheckResult.skip();
+        if (d.synchronization().movementUncertain(now))
+            return CheckResult.uncertain(SkipReason.SYNCHRONIZING);
+        var s = CombatSnapshot.capture(e.getPlayer(), d, p, histories, config, now);
+        if (s == null || !s.position().historical())
+            return CheckResult.uncertain(SkipReason.INSUFFICIENT_HISTORY);
+        var b = s.position().box();
+        var t = s.position();
+        var eye = s.eye();
+        double distance =
+                Math.sqrt(
+                        CombatGeometry.distanceSquared(
+                                eye.x(), eye.y(), eye.z(), b, t.x(), t.y(), t.z()));
+        double limit = e.getPlayer().getAttributeValue(Attribute.ENTITY_INTERACTION_RANGE) + .10;
+        if (distance > limit)
+            return CheckResult.cancel(
+                    Math.min(8, 1 + (distance - limit) * 6),
+                    new CheckEvidence(distance, limit, .10, "historical-melee-range"));
+        // Occlusion is evaluated independently of facing, including targets behind the player.
+        var los =
+                CombatGeometry.lineOfSight(
+                        e.getPlayer().getInstance(),
+                        eye.x(),
+                        eye.y(),
+                        eye.z(),
+                        b,
+                        t.x(),
+                        t.y(),
+                        t.z());
+        if (los == CombatGeometry.LineOfSight.INCOMPLETE)
+            return CheckResult.uncertain(SkipReason.WORLD_UNAVAILABLE);
+        if (los == CombatGeometry.LineOfSight.BLOCKED)
+            return CheckResult.cancel(1.5, "melee segment crossed native block shape");
+        return CheckResult.pass();
     }
 }

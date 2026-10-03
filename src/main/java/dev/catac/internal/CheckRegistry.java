@@ -24,7 +24,7 @@ public final class CheckRegistry {
         this.config = config;
     }
 
-    public void register(CatCheck check) {
+    public synchronized void register(CatCheck check) {
         if (frozen) {
             throw new IllegalStateException("Check registry is frozen");
         }
@@ -32,8 +32,9 @@ public final class CheckRegistry {
         boolean packetCheck = check instanceof PacketCheck;
         boolean movementCheck = check instanceof MovementCheck;
         if (packetCheck == movementCheck) {
-            throw new IllegalArgumentException("A check must implement exactly one of PacketCheck or MovementCheck: " +
-                    check.getClass().getName());
+            throw new IllegalArgumentException(
+                    "A check must implement exactly one of PacketCheck or MovementCheck: "
+                            + check.getClass().getName());
         }
 
         var descriptor = Objects.requireNonNull(check.descriptor(), "check.descriptor()");
@@ -44,17 +45,34 @@ public final class CheckRegistry {
         CheckPolicy policy = config.policyFor(id, descriptor.defaultPolicy());
         int slot = size;
         if (packetCheck) {
+            if (descriptor.capabilities().correctMovement()) {
+                throw new IllegalArgumentException("Packet checks cannot correct movement: " + id);
+            }
             PacketCheck packet = (PacketCheck) check;
-            packetChecks.add(new RegisteredPacketCheck(packet, slot, policy, new CheckRuntime()));
+            packetChecks.add(
+                    new RegisteredPacketCheck(
+                            packet,
+                            slot,
+                            policy,
+                            new CheckRuntime(),
+                            descriptor,
+                            Set.copyOf(packet.packetTypes())));
         } else {
             MovementCheck movement = (MovementCheck) check;
-            movementChecks.add(new RegisteredMovementCheck(movement, slot, policy, new CheckRuntime()));
+            movementChecks.add(
+                    new RegisteredMovementCheck(
+                            movement, slot, policy, new CheckRuntime(), descriptor));
         }
         ids.add(id);
         size++;
     }
 
-    public void freeze() {
+    public synchronized void freeze() {
+        Set<String> overrides = new HashSet<>(config.policyOverrides().keySet());
+        overrides.addAll(config.checkModeOverrides().keySet());
+        overrides.removeAll(ids);
+        if (!overrides.isEmpty())
+            throw new IllegalArgumentException("Unknown check overrides: " + overrides);
         frozen = true;
     }
 

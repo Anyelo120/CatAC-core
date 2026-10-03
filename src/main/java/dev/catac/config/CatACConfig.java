@@ -1,9 +1,13 @@
 package dev.catac.config;
 
+import dev.catac.api.ClientProfileProvider;
 import dev.catac.api.EnforcementMode;
 import dev.catac.api.ExemptionProvider;
+import dev.catac.api.NanoClock;
 import dev.catac.api.PlayerMessageProvider;
 import dev.catac.api.ViolationHandler;
+import dev.catac.state.TimeWindow;
+
 import net.kyori.adventure.text.Component;
 
 import java.time.Duration;
@@ -13,6 +17,12 @@ import java.util.Objects;
 
 public final class CatACConfig {
     private final EnforcementMode enforcementMode;
+    private final Map<String, EnforcementMode> checkModes;
+    private final NanoClock clock;
+    private final ClientProfileProvider clientProfileProvider;
+    private final long incidentWindowNanos;
+    private final int minimumDetectionsBeforeKick;
+    private final int traceCapacity;
     private final Map<String, CheckPolicy> policies;
     private final ViolationHandler violationHandler;
     private final ExemptionProvider exemptionProvider;
@@ -37,6 +47,12 @@ public final class CatACConfig {
 
     private CatACConfig(Builder builder) {
         this.enforcementMode = builder.enforcementMode;
+        this.checkModes = Map.copyOf(builder.checkModes);
+        this.clock = builder.clock;
+        this.clientProfileProvider = builder.clientProfileProvider;
+        this.incidentWindowNanos = builder.incidentWindow.toNanos();
+        this.minimumDetectionsBeforeKick = builder.minimumDetectionsBeforeKick;
+        this.traceCapacity = builder.traceCapacity;
         this.policies = Map.copyOf(builder.policies);
         this.violationHandler = builder.violationHandler;
         this.exemptionProvider = builder.exemptionProvider;
@@ -72,6 +88,34 @@ public final class CatACConfig {
         return enforcementMode;
     }
 
+    public NanoClock clock() {
+        return clock;
+    }
+
+    public ClientProfileProvider clientProfileProvider() {
+        return clientProfileProvider;
+    }
+
+    public long incidentWindowNanos() {
+        return incidentWindowNanos;
+    }
+
+    public int minimumDetectionsBeforeKick() {
+        return minimumDetectionsBeforeKick;
+    }
+
+    public int traceCapacity() {
+        return traceCapacity;
+    }
+
+    public Map<String, EnforcementMode> checkModeOverrides() {
+        return checkModes;
+    }
+
+    public EnforcementMode modeFor(String id) {
+        return checkModes.getOrDefault(id, enforcementMode);
+    }
+
     public CheckPolicy policyFor(String checkId, CheckPolicy fallback) {
         Objects.requireNonNull(checkId, "checkId");
         return policies.getOrDefault(checkId, Objects.requireNonNull(fallback, "fallback"));
@@ -94,16 +138,31 @@ public final class CatACConfig {
     }
 
     /** Formats a warning or setback message; returning null suppresses it. */
-    public PlayerMessageProvider playerMessageProvider() { return playerMessageProvider; }
+    public PlayerMessageProvider playerMessageProvider() {
+        return playerMessageProvider;
+    }
 
     /** Cooldown shared by player-facing warnings and setback notices. */
-    public long playerNoticeCooldownNanos() { return playerNoticeCooldownNanos; }
+    public long playerNoticeCooldownNanos() {
+        return playerNoticeCooldownNanos;
+    }
 
     /** Number of quiet warnings for the same check required before a normal kick. */
-    public int warningsBeforeKick() { return warningsBeforeKick; }
-    public AuraDecoyPolicy auraDecoyPolicy() { return auraDecoyPolicy; }
-    public DamageProtectionPolicy damageProtectionPolicy() { return damageProtectionPolicy; }
-    public PacketFloodPolicy packetFloodPolicy() { return packetFloodPolicy; }
+    public int warningsBeforeKick() {
+        return warningsBeforeKick;
+    }
+
+    public AuraDecoyPolicy auraDecoyPolicy() {
+        return auraDecoyPolicy;
+    }
+
+    public DamageProtectionPolicy damageProtectionPolicy() {
+        return damageProtectionPolicy;
+    }
+
+    public PacketFloodPolicy packetFloodPolicy() {
+        return packetFloodPolicy;
+    }
 
     public long joinGraceNanos() {
         return joinGraceNanos;
@@ -118,16 +177,24 @@ public final class CatACConfig {
     }
 
     /** Interval between low-cost server Ping probes when no velocity is pending. */
-    public long networkProbeIntervalNanos() { return networkProbeIntervalNanos; }
+    public long networkProbeIntervalNanos() {
+        return networkProbeIntervalNanos;
+    }
 
     /** Maximum time CatAC waits for a Pong or teleport confirmation. */
-    public long networkAcknowledgementTimeoutNanos() { return networkAcknowledgementTimeoutNanos; }
+    public long networkAcknowledgementTimeoutNanos() {
+        return networkAcknowledgementTimeoutNanos;
+    }
 
     /** Minimum compensation applied before measured client latency. */
-    public long combatRewindPaddingNanos() { return combatRewindPaddingNanos; }
+    public long combatRewindPaddingNanos() {
+        return combatRewindPaddingNanos;
+    }
 
     /** Hard upper bound for a melee rewind; it must never become a reach bonus. */
-    public long combatMaxRewindNanos() { return combatMaxRewindNanos; }
+    public long combatMaxRewindNanos() {
+        return combatMaxRewindNanos;
+    }
 
     public double lagCompensationThresholdMillis() {
         return lagCompensationThresholdMillis;
@@ -138,14 +205,22 @@ public final class CatACConfig {
     }
 
     /** Enables low-cost cumulative metrics exposed through {@code CatAC.metrics()}. */
-    public boolean telemetryEnabled() { return telemetryEnabled; }
+    public boolean telemetryEnabled() {
+        return telemetryEnabled;
+    }
 
     public boolean debug() {
         return debug;
     }
 
     public static final class Builder {
-        private EnforcementMode enforcementMode = EnforcementMode.SETBACK;
+        private EnforcementMode enforcementMode = EnforcementMode.MONITOR;
+        private final Map<String, EnforcementMode> checkModes = new HashMap<>();
+        private NanoClock clock = NanoClock.SYSTEM;
+        private ClientProfileProvider clientProfileProvider = ClientProfileProvider.JAVA;
+        private Duration incidentWindow = Duration.ofSeconds(120);
+        private int minimumDetectionsBeforeKick = 4;
+        private int traceCapacity;
         private final Map<String, CheckPolicy> policies = new HashMap<>();
         private ViolationHandler violationHandler = ViolationHandler.NOOP;
         private ExemptionProvider exemptionProvider = ExemptionProvider.NONE;
@@ -153,7 +228,7 @@ public final class CatACConfig {
         private PlayerMessageProvider playerMessageProvider = PlayerMessageProvider.DEFAULT;
         private Duration playerNoticeCooldown = Duration.ofSeconds(4);
         private int warningsBeforeKick = 2;
-        private AuraDecoyPolicy auraDecoyPolicy = AuraDecoyPolicy.defaults();
+        private AuraDecoyPolicy auraDecoyPolicy = AuraDecoyPolicy.disabled();
         private DamageProtectionPolicy damageProtectionPolicy = DamageProtectionPolicy.defaults();
         private PacketFloodPolicy packetFloodPolicy = PacketFloodPolicy.defaults();
         private Duration joinGrace = Duration.ofSeconds(1);
@@ -168,11 +243,45 @@ public final class CatACConfig {
         private boolean telemetryEnabled = true;
         private boolean debug;
 
-        private Builder() {
-        }
+        private Builder() {}
 
         public Builder enforcementMode(EnforcementMode enforcementMode) {
             this.enforcementMode = Objects.requireNonNull(enforcementMode, "enforcementMode");
+            return this;
+        }
+
+        public Builder clock(NanoClock clock) {
+            this.clock = Objects.requireNonNull(clock);
+            return this;
+        }
+
+        public Builder clientProfileProvider(ClientProfileProvider provider) {
+            this.clientProfileProvider = Objects.requireNonNull(provider);
+            return this;
+        }
+
+        public Builder checkMode(String id, EnforcementMode mode) {
+            checkModes.put(requireCheckId(id), Objects.requireNonNull(mode));
+            return this;
+        }
+
+        public Builder incidentWindow(Duration window) {
+            this.incidentWindow = requirePositive(window, "incidentWindow");
+            return this;
+        }
+
+        public Builder minimumDetectionsBeforeKick(int count) {
+            if (count < 2 || count > 1000)
+                throw new IllegalArgumentException("detections must be 2..1000");
+            this.minimumDetectionsBeforeKick = count;
+            return this;
+        }
+
+        /** Opt-in ring of numeric detection records; no raw packet payload is retained. */
+        public Builder traceCapacity(int capacity) {
+            if (capacity < 0 || capacity > 256)
+                throw new IllegalArgumentException("traceCapacity must be 0..256");
+            this.traceCapacity = capacity;
             return this;
         }
 
@@ -202,16 +311,18 @@ public final class CatACConfig {
         }
 
         /**
-         * Configures contextual player feedback. The provider may return null
-         * for checks or notice types that a host does not want to expose.
+         * Configures contextual player feedback. The provider may return null for checks or notice
+         * types that a host does not want to expose.
          */
         public Builder playerMessageProvider(PlayerMessageProvider playerMessageProvider) {
-            this.playerMessageProvider = Objects.requireNonNull(playerMessageProvider, "playerMessageProvider");
+            this.playerMessageProvider =
+                    Objects.requireNonNull(playerMessageProvider, "playerMessageProvider");
             return this;
         }
 
         public Builder playerNoticeCooldown(Duration playerNoticeCooldown) {
-            this.playerNoticeCooldown = requirePositive(playerNoticeCooldown, "playerNoticeCooldown");
+            this.playerNoticeCooldown =
+                    requirePositive(playerNoticeCooldown, "playerNoticeCooldown");
             return this;
         }
 
@@ -230,7 +341,8 @@ public final class CatACConfig {
         }
 
         public Builder damageProtectionPolicy(DamageProtectionPolicy damageProtectionPolicy) {
-            this.damageProtectionPolicy = Objects.requireNonNull(damageProtectionPolicy, "damageProtectionPolicy");
+            this.damageProtectionPolicy =
+                    Objects.requireNonNull(damageProtectionPolicy, "damageProtectionPolicy");
             return this;
         }
 
@@ -255,18 +367,20 @@ public final class CatACConfig {
         }
 
         public Builder networkProbeInterval(Duration networkProbeInterval) {
-            this.networkProbeInterval = requirePositive(networkProbeInterval, "networkProbeInterval");
+            this.networkProbeInterval =
+                    requirePositive(networkProbeInterval, "networkProbeInterval");
             return this;
         }
 
         public Builder networkAcknowledgementTimeout(Duration networkAcknowledgementTimeout) {
-            this.networkAcknowledgementTimeout = requirePositive(networkAcknowledgementTimeout,
-                    "networkAcknowledgementTimeout");
+            this.networkAcknowledgementTimeout =
+                    requirePositive(networkAcknowledgementTimeout, "networkAcknowledgementTimeout");
             return this;
         }
 
         public Builder combatRewindPadding(Duration combatRewindPadding) {
-            this.combatRewindPadding = requireNonNegative(combatRewindPadding, "combatRewindPadding");
+            this.combatRewindPadding =
+                    requireNonNegative(combatRewindPadding, "combatRewindPadding");
             return this;
         }
 
@@ -299,8 +413,11 @@ public final class CatACConfig {
         }
 
         public CatACConfig build() {
+            if (combatMaxRewind.compareTo(Duration.ofMillis(500)) > 0)
+                throw new IllegalArgumentException("combatMaxRewind cannot exceed 500 ms");
             if (combatRewindPadding.compareTo(combatMaxRewind) > 0) {
-                throw new IllegalArgumentException("combatRewindPadding cannot exceed combatMaxRewind");
+                throw new IllegalArgumentException(
+                        "combatRewindPadding cannot exceed combatMaxRewind");
             }
             return new CatACConfig(this);
         }
@@ -318,6 +435,7 @@ public final class CatACConfig {
             if (duration.isNegative()) {
                 throw new IllegalArgumentException(name + " cannot be negative");
             }
+            TimeWindow.checkedNanos(duration);
             return duration;
         }
 

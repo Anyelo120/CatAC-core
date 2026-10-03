@@ -11,8 +11,19 @@ public record CatViolationEvent(
         double severity,
         double buffer,
         String evidence,
-        ViolationAction action
-) implements Event {
+        ViolationAction action,
+        CheckEvidence details)
+        implements Event {
+    public CatViolationEvent(
+            Player player,
+            CheckDescriptor check,
+            double severity,
+            double buffer,
+            String evidence,
+            ViolationAction action) {
+        this(player, check, severity, buffer, evidence, action, null);
+    }
+
     public CatViolationEvent {
         Objects.requireNonNull(player, "player");
         Objects.requireNonNull(check, "check");

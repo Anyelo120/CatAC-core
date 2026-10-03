@@ -7,12 +7,9 @@ import java.util.Objects;
 
 /** Typed settings for denying damage caused by a cancelled combat action. */
 public record DamageProtectionPolicy(
-        boolean enabled,
-        Duration denialWindow,
-        DamageDecisionProvider decisionProvider
-) {
+        boolean enabled, Duration denialWindow, DamageDecisionProvider decisionProvider) {
     public DamageProtectionPolicy {
-        Objects.requireNonNull(denialWindow, "denialWindow");
+        dev.catac.state.TimeWindow.checkedNanos(denialWindow);
         Objects.requireNonNull(decisionProvider, "decisionProvider");
         if (denialWindow.isNegative() || denialWindow.isZero()) {
             throw new IllegalArgumentException("denialWindow must be positive");
@@ -20,7 +17,8 @@ public record DamageProtectionPolicy(
     }
 
     public static DamageProtectionPolicy defaults() {
-        return new DamageProtectionPolicy(true, Duration.ofMillis(500), DamageDecisionProvider.DENY_BY_DEFAULT);
+        return new DamageProtectionPolicy(
+                true, Duration.ofMillis(500), DamageDecisionProvider.DENY_BY_DEFAULT);
     }
 
     public static DamageProtectionPolicy disabled() {

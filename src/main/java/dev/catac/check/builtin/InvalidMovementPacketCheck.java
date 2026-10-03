@@ -6,6 +6,7 @@ import dev.catac.check.CheckResult;
 import dev.catac.check.PacketCheck;
 import dev.catac.config.CheckPolicy;
 import dev.catac.state.PlayerData;
+
 import net.minestom.server.coordinate.Point;
 import net.minestom.server.event.player.PlayerPacketEvent;
 import net.minestom.server.network.packet.client.ClientPacket;
@@ -15,13 +16,24 @@ import net.minestom.server.network.packet.client.play.ClientPlayerRotationPacket
 
 public final class InvalidMovementPacketCheck implements PacketCheck {
     private static final double MAX_COORDINATE = 30_000_000.0;
-    private static final CheckDescriptor DESCRIPTOR = new CheckDescriptor(
-            "packet.invalid-movement",
-            "Invalid movement packet",
-            CheckCategory.PACKET,
-            new CheckPolicy(true, 1, 1, 3, 0, 1_000),
-            false
-    );
+    private static final CheckDescriptor DESCRIPTOR =
+            new CheckDescriptor(
+                    "packet.invalid-movement",
+                    "Invalid movement packet",
+                    CheckCategory.PACKET,
+                    new CheckPolicy(true, 1, 1, 3, 0, 1_000),
+                    false,
+                    dev.catac.api.CheckCapabilities.PROTOCOL);
+
+    @Override
+    public java.util.Set<Class<? extends net.minestom.server.network.packet.client.ClientPacket>>
+            packetTypes() {
+        return java.util.Set.of(
+                net.minestom.server.network.packet.client.play.ClientPlayerPositionPacket.class,
+                net.minestom.server.network.packet.client.play.ClientPlayerPositionAndRotationPacket
+                        .class,
+                net.minestom.server.network.packet.client.play.ClientPlayerRotationPacket.class);
+    }
 
     @Override
     public CheckDescriptor descriptor() {
@@ -39,20 +51,25 @@ public final class InvalidMovementPacketCheck implements PacketCheck {
             if (!position.passed()) {
                 return position;
             }
-            return validateRotation(positionRotationPacket.position().yaw(), positionRotationPacket.position().pitch());
+            return validateRotation(
+                    positionRotationPacket.position().yaw(),
+                    positionRotationPacket.position().pitch());
         }
         if (packet instanceof ClientPlayerRotationPacket rotationPacket) {
             return validateRotation(rotationPacket.yaw(), rotationPacket.pitch());
         }
-        return CheckResult.pass();
+        return CheckResult.skip();
     }
 
     private static CheckResult validatePosition(Point point) {
-        if (!Double.isFinite(point.x()) || !Double.isFinite(point.y()) || !Double.isFinite(point.z())) {
+        if (!Double.isFinite(point.x())
+                || !Double.isFinite(point.y())
+                || !Double.isFinite(point.z())) {
             return CheckResult.disconnect(10, "non-finite position");
         }
-        if (Math.abs(point.x()) > MAX_COORDINATE || Math.abs(point.y()) > MAX_COORDINATE ||
-                Math.abs(point.z()) > MAX_COORDINATE) {
+        if (Math.abs(point.x()) > MAX_COORDINATE
+                || Math.abs(point.y()) > MAX_COORDINATE
+                || Math.abs(point.z()) > MAX_COORDINATE) {
             return CheckResult.disconnect(10, "position outside protocol-safe world bounds");
         }
         return CheckResult.pass();
@@ -63,7 +80,7 @@ public final class InvalidMovementPacketCheck implements PacketCheck {
             return CheckResult.disconnect(10, "non-finite rotation");
         }
         if (Math.abs(pitch) > 90.0001f) {
-            return CheckResult.cancel(2, "pitch outside [-90, 90]: " + pitch);
+            return CheckResult.reject(2, "pitch outside [-90, 90]: " + pitch);
         }
         return CheckResult.pass();
     }

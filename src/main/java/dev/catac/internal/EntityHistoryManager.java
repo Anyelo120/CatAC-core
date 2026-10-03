@@ -1,6 +1,7 @@
 package dev.catac.internal;
 
 import dev.catac.state.PositionHistory;
+
 import net.minestom.server.entity.Entity;
 
 import java.util.concurrent.ConcurrentHashMap;
@@ -10,21 +11,33 @@ public final class EntityHistoryManager {
     private final ConcurrentHashMap<Integer, TrackedHistory> histories = new ConcurrentHashMap<>();
 
     public void track(Entity entity, long nowNanos) {
+        if (!(entity instanceof net.minestom.server.entity.LivingEntity)) return;
         int entityId = entity.getEntityId();
         TrackedHistory history = histories.get(entityId);
         if (history != null && history.entity == entity) {
-            history.positions.add(entity.getPosition(), nowNanos);
+            history.positions.add(
+                    entity.getPosition(), entity.getBoundingBox(), entity.getInstance(), nowNanos);
             return;
         }
-        histories.compute(entityId, (id, current) -> {
-            if (current != null && current.entity == entity) {
-                current.positions.add(entity.getPosition(), nowNanos);
-                return current;
-            }
-            TrackedHistory replacement = new TrackedHistory(entity);
-            replacement.positions.add(entity.getPosition(), nowNanos);
-            return replacement;
-        });
+        histories.compute(
+                entityId,
+                (id, current) -> {
+                    if (current != null && current.entity == entity) {
+                        current.positions.add(
+                                entity.getPosition(),
+                                entity.getBoundingBox(),
+                                entity.getInstance(),
+                                nowNanos);
+                        return current;
+                    }
+                    TrackedHistory replacement = new TrackedHistory(entity);
+                    replacement.positions.add(
+                            entity.getPosition(),
+                            entity.getBoundingBox(),
+                            entity.getInstance(),
+                            nowNanos);
+                    return replacement;
+                });
     }
 
     public PositionHistory find(Entity entity) {
@@ -33,7 +46,13 @@ public final class EntityHistoryManager {
     }
 
     public void remove(Entity entity) {
-        histories.computeIfPresent(entity.getEntityId(), (id, history) -> history.entity == entity ? null : history);
+        histories.computeIfPresent(
+                entity.getEntityId(), (id, history) -> history.entity == entity ? null : history);
+    }
+
+    public void discontinuity(Entity entity) {
+        PositionHistory history = find(entity);
+        if (history != null) history.clear();
     }
 
     public void clear() {

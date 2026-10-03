@@ -1,14 +1,16 @@
 package dev.catac;
 
-import dev.catac.api.CatACState;
-import net.minestom.server.MinecraftServer;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import dev.catac.api.CatACState;
+
+import net.minestom.server.MinecraftServer;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 class CatACLifecycleTest {
     @BeforeAll

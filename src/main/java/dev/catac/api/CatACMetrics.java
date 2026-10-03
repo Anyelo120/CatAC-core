@@ -9,6 +9,4 @@ public record CatACMetrics(
         long kicks,
         long floodDrops,
         long floodKicks,
-        int trackedPlayers
-) {
-}
+        int trackedPlayers) {}

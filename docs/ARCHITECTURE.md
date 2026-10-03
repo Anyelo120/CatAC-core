@@ -1,205 +1,84 @@
-# Arquitectura
+# Arquitectura de CatAC 2.0
 
-## Objetivos
+## Flujo y autoridad
 
-CatAC separa captura, estado, detección y aplicación. La intención es que un
-check decida si una muestra es anómala, pero no manipule directamente al jugador.
-Esto permite ejecutar los mismos checks en monitorización, setback o kick.
-
-## Flujo de una muestra
+`CatEngine` recibe paquetes y eventos mediante un EventNode de Minestom. Los checks devuelven evidencia; `EnforcementEngine` combina capacidades, perfil y política. La aplicación nativa y el resultado final del host se confirman antes de aprender movimiento o contabilizar acciones. Un callback de infracción informa una decisión; no demuestra que se haya ejecutado.
 
 ```mermaid
 flowchart TD
-    A[Evento o paquete Minestom] --> B[PlayerData]
-    B --> C[Contexto compartido]
-    C --> D[Checks registrados]
-    D --> E[Buffer y política]
-    E --> F[Evento y callback]
-    E --> G[Aviso limitado]
-    G --> H[Cancelación, setback o kick]
+    A["Entrada nativa"] --> B["Hardening y presupuesto"]
+    B --> C["Contexto y checks"]
+    C --> D["Capacidades y política"]
+    D --> E["Acción o candidato"]
+    E --> F{"Estado final nativo"}
+    F -->|"Válido y aplicado"| G["Modelo, ancla y métricas"]
+    F -->|"Cancelado o modificado"| H["Descartar confianza"]
 ```
 
-1. `CatEngine` recibe eventos desde un único `EventNode`.
-2. `PlayerDataManager` obtiene el estado del jugador por UUID.
-3. En movimiento, `CollisionAnalyzer` calcula una sola instantánea reutilizable.
-4. Cada check devuelve un `CheckResult`, sin aplicar sanciones por su cuenta.
-5. `EnforcementEngine` actualiza el buffer y resuelve la acción según política y modo.
-6. La infracción se publica como `CatViolationEvent` y mediante el callback.
+La entrada del cliente nunca define una exención, un perfil, un ancla o el impulso esperado. Suelo, colisión horizontal y bits de entrada son afirmaciones no confiables. El perfil y las mecánicas admitidas proceden del host; posición aplicada, atributo, herramienta, bloque y velocidad enviada proceden del servidor.
 
-## Estado por jugador
+## Resultados, capacidades y degradación
 
-`PlayerData` conserva únicamente datos acotados:
+`CheckResult` distingue no aplicable, incertidumbre, pase, infracción y formato inválido. La incertidumbre puede solicitar reconciliación sin severidad. Sólo un fallo positivo suma evidencia; el decaimiento utiliza el reloj inyectado y tiempo transcurrido. Las ventanas toleran origen monotónico negativo y rollover, con duración máxima de 24 horas.
 
-- una entrada de `ViolationState` por check;
-- un `MovementFrame` mutable que se reutiliza;
-- historial circular de posiciones para rewind;
-- estado de excavación;
-- sincronización de RTT/jitter, teletransporte y velocidades con arreglos fijos;
-- contadores de aire, deltas anteriores y balance de paquetes;
-- última posición segura y ventanas de exención.
+`CheckDescriptor` se captura una vez en el registro congelado. Las clases de paquetes se cachean para dispatch. `cancelAction`, `correctMovement`, `kick` y `hardening` son independientes, con validación de combinaciones incompatibles. `OBSERVE` es un techo permanente; cambiar el modo no amplía capacidades. Los perfiles distintos de Java 1.21.11 limitan los fallos de gameplay a monitorización. Un `uncertainCancel` de ventana/objetivo obsoleto sigue siendo reconciliación, independiente de ese modo.
 
-No se crean listas de bloques ni objetos de contexto por check. La instantánea de
-colisión se limpia y rellena para la siguiente muestra.
+Una excepción desactiva el check para esa instancia, aumenta `faults` y no genera un pase. No hay reintento automático ni reparación silenciosa. La salud de proveedores, los overflows y fallos de callbacks quedan expuestos; los logs se limitan por categoría. Si falla un validador necesario, no se alimenta la física dependiente. Hardening no consulta las exenciones del host.
 
-## Colisiones
+## Propiedad del estado y límites
 
-`CollisionAnalyzer` examina la AABB del jugador y las formas de colisión reales
-de Minestom. Produce señales compartidas: soporte bajo los pies, intersección con
-sólido, chunk incompleto, líquido, escalable, telaraña, honey/slime, fricción y
-factor de velocidad de superficie.
+El estado mutable por jugador se serializa con `synchronized(data)` en las rutas del motor y API. Los historiales proporcionan snapshots bajo su propio monitor; un atacante no necesita adquirir el monitor del objetivo. La retirada de una sesión y el cierre del manager impiden recrearla durante shutdown. Esto protege las rutas de CatAC; no permite que extensiones manipulen `PlayerData` desde workers arbitrarios.
 
-Si falta un chunk o aparece una mecánica física que el predictor inicial no puede
-modelar con seguridad, los checks de movimiento se abstienen. Un falso negativo
-acotado es preferible a castigar una transición legítima.
+| Estado | Cota |
+|---|---|
+| Buffer y runtime | Una entrada por check registrado; registro congelado |
+| Historial | 64 muestras por jugador/entidad viva rastreada |
+| Sondas Ping | 8 pendientes por jugador |
+| Velocidades asociadas a sondas | 8 pendientes por jugador |
+| Mailbox de señales de salida | 16 entradas por jugador; overflow visible |
+| Trace de detecciones | 0 por defecto; máximo 256 entradas por jugador |
+| Broad phase de colisión | 512 celdas por análisis; exceso produce incompleto |
+| Evidencia textual / modelo | 512 / 96 caracteres |
+| Lectura de replay | 100.000 entradas; 1.024 caracteres por línea |
 
-## Buffers y aplicación
+La memoria total sigue creciendo con jugadores, entidades vivas y checks registrados; las cotas por entrada no son una cota global del servidor. Un overflow de salida reinicia el modelo y abre una gracia; no se oculta como sincronización correcta.
 
-Un fallo suma su `severity`; un pase resta `decayPerPass`. Los tres umbrales de la
-política son crecientes:
+## Movimiento y confianza
 
-- `alertBuffer`: publica telemetría respetando el cooldown;
-- `setbackBuffer`: habilita el retorno a `lastSafePosition`;
-- `kickBuffer`: permite expulsión cuando el modo global es `KICK` y se han
-  emitido los avisos requeridos para ese mismo check.
+Se observa un destino antes de su aplicación. Sólo un candidato limpio, aprobado por los validadores obligatorios y coincidente con posición/instancia nativas finales confirma el predictor. Un candidato sospechoso en `MONITOR` puede seguir en el historial de observaciones, pero no enseña velocidad ni actualiza el ancla. Los eventos sólo de rotación no añaden un paso de física de XYZ.
 
-Los resultados `cancel` detienen inmediatamente paquetes cuya ejecución no es
-segura (por ejemplo inventario estructuralmente imposible o fast-break
-confirmado), aunque la sanción mayor siga dependiendo del buffer. Las señales
-físicas ambiguas acumulan evidencia antes de bloquear. `disconnect` se reserva
-para datos no finitos o equivalentes y puede deshabilitarse con
-`disconnectMalformedPackets(false)`.
+El ancla incluye instancia, se actualiza después de suelo estable y se revalida contra el mundo actual antes de corregir. Un teleport del host no autoriza su candidato pre-commit: se confirma su posición nativa y su geometría. Si el host cancela o modifica un destino, el candidato original se descarta. Los receipts de cancelación/corrección se resuelven en la siguiente entrada o EntityTick del jugador; el contador de setback exige un cambio nativo compatible, no sólo intención de cancelación.
 
-`ViolationState` mantiene dos cooldowns independientes: el de alertas para
-moderación y el de avisos al jugador. Los avisos se cuentan por check, nunca de
-forma global, por lo que una anomalía de inventario no puede desbloquear un kick
-de movimiento. `PlayerMessageProvider` produce los textos en el hilo de evento
-y puede devolver `null` para suprimir selectivamente una notificación.
+`MovementPrediction` guarda vx/vy/vz y usa fricción, aceleración, gravedad, drag, atributos y efectos soportados. La observación actual no siembra la predicción usada para evaluar ese mismo frame. Los impulsos usan el vector enviado por el servidor; las unidades se distinguen: velocidad de entidad en bloques/segundo y EntityVelocityPacket en bloques/tick. Es una envolvente conservadora, no una reproducción bit a bit de todas las entradas del cliente.
 
-## Lag y latencia
+La calidad física se limita en líquidos, escalada, uso de objetos y otras mecánicas que el núcleo no modela completamente. Los nuevos checks experimentales aportan observación; elytra, riptide, vehículos y vuelo personalizado no reciben una simulación completa en esta versión. Phase conserva su validación geométrica cuando el medio suspende la física, salvo las exenciones geométricas explícitas.
 
-`TickHealth` observa la duración de ticks. Si supera el umbral configurado abre
-una ventana breve de compensación para timer y fast-break. La latencia del jugador
-añade tolerancia acotada, nunca una exención ilimitada. Reach consulta posiciones
-históricas dentro de una ventana máxima de 750 ms.
+## Colisión continua
 
-`PlayerSynchronization` añade una capa independiente de los checks: envía una
-sonda `PingPacket` periódica y mide su `ClientPongPacket`, conserva RTT y jitter
-suavizados y limita a ocho sondas en vuelo. Cada velocidad se asocia al primer
-Ping emitido al final del tick, de modo que su Pong confirma que el cliente vio
-los paquetes anteriores en la conexión ordenada. Los teletransportes capturan
-el ID enviado por Minestom y sólo se cierran con el `ClientTeleportConfirmPacket`
-correspondiente. Mientras exista sincronización pendiente, los checks predictivos
-de movimiento se abstienen; todos los estados vencen tras el timeout configurado.
+`CollisionAnalyzer` utiliza `Shape.intersectBoxSwept` de la dependencia fijada, con búsqueda de shapes vecinas, destino, soporte y contactos. Prueba orden vertical, alternativas horizontales y step arriba-horizontal-abajo según el atributo. El presupuesto cuenta celdas; al excederlo no se degrada a un muestreo de menor resolución ni acepta un ancla.
 
-## Predictor y barrido de movimiento
+Se conserva el factor lento 0,4 de superficies correspondientes y se toman contactos reales para fricción. El barrido nativo aplica una piel numérica (`0.99999`); CatAC tolera `2e-5` en la fracción de recorrido y contrae mínimamente la caja para distinguir contacto final de penetración. Las regresiones cubren aterrizaje, paneles finos, fences, slabs, stairs y deslizamiento por esquina. Un inicio dentro de un sólido produce incertidumbre en vez de un phase fabricado.
 
-`MovementPrediction` conserva sólo las velocidades horizontal y vertical de la
-muestra anterior y calcula una envolvente superior para la siguiente. En suelo
-usa la aceleración de vanilla, fricción de superficie y atributo de movimiento;
-en aire aplica drag y aceleración aérea. En vertical aplica gravedad y drag o
-permite la velocidad de salto, incluyendo `JUMP_BOOST`. Es una envolvente, no un
-replay de entradas del cliente: CatAC no inventa teclas que el protocolo no
-envía y prefiere abstenerse ante mecánicas que no puede modelar.
+## Sincronización y rewind
 
-El `CollisionAnalyzer` primero inspecciona la AABB destino y luego barre las
-AABB intermedias cada 0,20 bloques, hasta 32 pasos. Esto conserva un coste
-máximo por paquete y detecta un cruce de pared aunque la caja final ya no esté
-dentro del bloque. Si una AABB intermedia toca un chunk ausente, marca la
-instantánea incompleta para impedir una detección basada en mundo parcial.
+PlayerPacketOutEvent puede llegar desde otro hilo: encola señales acotadas que el estado del jugador drena. `PlayerSynchronization` avanza por EntityTick del jugador; ServerTickMonitor actualiza sólo salud de ticks. La ID del teleport observado debe coincidir con el envío pendiente; un confirm antiguo no desbloquea uno nuevo. La expectativa nativa de Minestom permanece incierta aunque expire el tracker de CatAC.
 
-## Combate temporal
+Las sondas y vectores usan IDs exactas, capacidad fija y expiración. Un Pong desconocido, duplicado o tardío no aplica una velocidad pendiente. Incluso un Pong correcto demuestra orden/recepción, no respuesta física. `SynchronizationDiagnostics` expone timeouts, sobrescrituras e ignorados.
 
-`EntityHistoryManager` mantiene una `PositionHistory` circular de 32 muestras
-por entidad viva. La entrada se actualiza en `EntityTickEvent` y se elimina en
-`EntityDespawnEvent`, con comprobación de identidad además del ID para que un
-ID reutilizado no herede datos de una entidad anterior.
+El historial almacena Pos, AABB, instancia, generación y tiempo. Cambios de instancia, saltos mayores de 8 bloques y huecos mayores de 250 ms abren discontinuidades; una AABB/pose distinta no se interpola. La calidad diferencia EXACT, INTERPOLATED, MISSING, OUT_OF_RANGE, DISCONTINUITY y GAP. No se usa un extremo viejo como sustituto de un tiempo fuera de rango. El rewind de combate predeterminado se limita a 350 ms y tiene un máximo configurable de 500 ms; nunca aumenta el atributo de reach.
 
-Al recibir un ataque, `combat.reach` determina un instante pasado con la mitad
-del RTT observado, jitter y un padding pequeño. Recupera mediante interpolación
-la posición del objetivo en ese instante. Después mide ojo-AABB y recorre la
-línea hasta la AABB contra las formas de colisión. Una dirección de cámara
-posiblemente desfasada no se convierte por sí sola en detección. La compensación
-cambia *cuándo* se evalúa el objetivo, no la distancia máxima permitida por el
-atributo de interacción.
+## Acciones nativas
 
-## Mundo, inventario y observabilidad
+El combate separa objetivo, distancia mínima ojo-AABB, oclusión y rayo de cámara. El rayo es observacional porque el orden de paquetes y la vista histórica introducen ambigüedad. Reach no depende de orientar la cámara hacia el objetivo para detectar una pared. Un objetivo/historial obsoleto provoca abstención o reconciliación, no evidencia punitiva inventada.
 
-Las interacciones de bloques se validan antes del listener nativo: CatAC comprueba
-el alcance ojo-AABB del bloque y los cursores de placement. Las acciones de
-inventario validan referencias estructurales (ventana, slot y hotbar), pero
-delegan la semántica completa del click al `ClickPreprocessor` de Minestom para
-no divergir de vanilla o de GUIs de plugins.
+Fast-break conserva herramienta completa, bloque, instancia y tiempo esperado nativo; si cambia el contexto, se abstiene/reconcilia. El tiempo de tolerancia por red está acotado. Las interacciones de bloques usan el atributo del servidor y reconcilian target, vecino y secuencia tras una cancelación.
 
-`EnforcementMetrics` usa contadores lock-free, separados del estado por jugador.
-`CatAC.metrics()` produce una instantánea de muestras anómalas, alertas y
-acciones aplicadas. Las métricas pueden apagarse en configuración y no almacenan
-evidencia, inventarios ni tráfico.
+Los clicks válidos siguen el preprocesador y los listeners nativos. CatAC no vuelve a aplicar el click ni inventa una segunda transacción de stateId; en la versión fijada, el comportamiento nativo de inventario no proporciona ese protocolo como autoridad independiente. Ventanas obsoletas se cancelan y actualizan sin infracción.
 
-## Sonda privada de aura
+La guarda de daño es una operación explícita del host. El overload con actionId positivo sólo se consume para ese atacante, víctima y acción, una vez. El overload legado síncrono usa otra ruta y se limpia al iniciar el siguiente ataque nativo. No se arma una guarda para un ataque que ya se impidió ejecutar.
 
-Ante un fallo de alcance con severidad configurable, `AuraDecoyManager` reserva
-un ID de entidad y emite un perfil no listado más `SpawnEntityPacket` sólo por
-la conexión del sospechoso. El estado por jugador conserva ese ID, UUID, posición
-horizontal, armado, expiración y cooldown; no existe entidad en la instancia.
-La destrucción se envía en expiración, desconexión o apagado.
+## Telemetría y coste
 
-Un `ClientInteractEntityPacket.Attack` sólo confirma si apunta a ese ID tras el
-armado y el vector de vista sigue orientado en sentido contrario. Esta sonda no
-se ejecuta ante exenciones manuales, velocidad/teletransporte pendiente,
-vehículos o elytra. La señal respeta el `EnforcementMode` global.
+`diagnostics()` distingue evaluaciones, pases, fallos, skip, incertidumbre, bypass y fallos de runtime; incluye motivos y coste acumulado/máximo. `metrics()` cuenta acciones confirmadas. El ring opcional almacena evidencia numérica y decisión sin posiciones o payloads de paquetes; no captura un replay automáticamente.
 
-## Barrera de daño
-
-Cuando un `PacketCheck` cancela un `ClientInteractEntityPacket.Attack`,
-`CatEngine` arma un `DamageGuardState` acotado en el atacante con UUID de la
-víctima, razón y expiración. En `EntityDamageEvent`, sólo el atacante y la
-víctima exactos pueden consumir esa guarda. `DamageDecisionProvider` devuelve
-`DENY` o `ALLOW`; el valor predeterminado cancela el evento antes de que Minestom
-modifique la vida. Un error del proveedor lo desactiva y conserva la decisión
-segura de denegar para una acción ya invalidada.
-
-La API pública `CatAC.denyDamage` permite a checks externos usar la misma
-barrera sin tocar salud, knockback ni estados de la víctima. No hay listas de
-ataques ni retención de entidades: cada jugador conserva una sola guarda.
-
-## Presupuesto de paquetes
-
-`PacketFloodState` reside dentro de `PlayerData` y contiene dos token buckets,
-un instante de refill y una única ventana de strikes. El coste es constante y
-no usa contenedores ni tareas. `PacketFloodPolicy` consume primero el presupuesto
-global y luego el presupuesto de paquetes `HEAVY`; si uno se agota, el
-`PlayerPacketEvent` se cancela antes de que `PacketListenerManager` invoque el
-listener vanilla.
-
-El clasificador público usa `NORMAL` para paquetes desconocidos/custom y marca
-como `HEAVY` sólo familias que pueden provocar trabajo desproporcionado. El
-callback y el evento se aíslan mediante circuit breaker: si un handler externo
-falla, CatAC lo desactiva y sigue descartando el flood. Esta capa actúa después
-de la decodificación de Minestom y antes de la lógica de juego; los límites de
-bytes, compresión y conexiones pertenecen al proxy/firewall del servidor.
-
-## Validación offline
-
-El paquete `dev.catac.testing` no participa en la inicialización de CatAC ni en
-el camino caliente. Sus APIs reciben datos genéricos del adaptador del servidor:
-`ReplayRunner` aplica tiempo controlado, `PacketFuzzer` genera entradas límite,
-`HotPathBenchmark` mide distribuciones locales y `CalibrationAnalyzer` agrega
-señales exportadas desde monitorización. Esta separación evita que un sistema de
-captura o análisis altere las decisiones de detección en producción.
-
-## Extensiones
-
-Un check implementa exactamente una de estas interfaces:
-
-- `PacketCheck`: inspección temprana de paquetes y posibilidad de cancelación.
-- `MovementCheck`: recibe `MovementFrame`, colisiones y estado ya calculados.
-
-Los IDs deben ser únicos y seguir el patrón `segmento.segmento`. El registro se
-congela al construir `CatAC`; así el bucle caliente itera arrays estables.
-
-## Modelo de concurrencia
-
-El estado está diseñado alrededor del modelo de eventos por jugador de Minestom.
-No debe mutarse `PlayerData` desde tareas arbitrarias. Los callbacks de infracción
-deben ser cortos; para I/O, copian los datos necesarios y delegan fuera del hilo de
-evento. La configuración es inmutable después de construirse.
+El reloj inyectado gobierna lógica y replay. El coste real se mide con `System.nanoTime()` para no confundir timestamps sintéticos con rendimiento. El benchmark incluido ejecuta listeners nativos con transporte en memoria y un solo jugador; su alcance y resultados están en VALIDACION.md. No se extrapola a concurrencia, red real o capacidad de producción.

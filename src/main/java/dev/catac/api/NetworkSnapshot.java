@@ -1,8 +1,7 @@
 package dev.catac.api;
 
 /**
- * Immutable, allocation-on-read view of CatAC's network synchronization state
- * for one player.
+ * Immutable, allocation-on-read view of CatAC's network synchronization state for one player.
  *
  * @param latencyAvailable whether at least one CatAC probe has been acknowledged
  * @param roundTripMillis estimated round-trip time, or {@code -1} when unavailable
@@ -15,6 +14,4 @@ public record NetworkSnapshot(
         double roundTripMillis,
         double jitterMillis,
         boolean teleportPending,
-        int pendingVelocities
-) {
-}
+        int pendingVelocities) {}

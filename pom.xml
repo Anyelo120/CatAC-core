@@ -6,7 +6,7 @@
 
     <groupId>dev.catac</groupId>
     <artifactId>catac-core</artifactId>
-    <version>1.0.0</version>
+    <version>2.0.0</version>
     <name>CatAC Core</name>
     <description>Low-overhead anti-cheat library for Minestom 1.21.11</description>
     <licenses>
@@ -22,6 +22,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <minestom.version>2026.05.11-1.21.11</minestom.version>
+        <project.build.outputTimestamp>2026-10-03T00:00:00Z</project.build.outputTimestamp>
         <junit.version>5.11.4</junit.version>
     </properties>
 
@@ -45,12 +46,24 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions><execution><id>supported-toolchain</id><goals><goal>enforce</goal></goals>
+                    <configuration><rules>
+                        <requireJavaVersion><version>[25,26)</version><message>CatAC 2.0 targets Java 25 and Minestom 1.21.11.</message></requireJavaVersion>
+                        <requireMavenVersion><version>[3.9.11,)</version></requireMavenVersion>
+                    </rules></configuration>
+                </execution></executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.14.1</version>
                 <configuration>
                     <release>25</release>
                     <parameters>true</parameters>
                     <showWarnings>true</showWarnings>
+                    <failOnWarning>true</failOnWarning>
                     <compilerArgs>
                         <arg>-Xlint:all</arg>
                     </compilerArgs>
@@ -71,6 +84,8 @@
                 <configuration>
                     <archive>
                         <manifestEntries>
+                            <CatAC-Minestom-Version>${minestom.version}</CatAC-Minestom-Version>
+                            <CatAC-Replay-Schema-Version>1</CatAC-Replay-Schema-Version>
                             <Automatic-Module-Name>dev.catac.core</Automatic-Module-Name>
                         </manifestEntries>
                     </archive>

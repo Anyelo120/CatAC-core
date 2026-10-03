@@ -3,6 +3,7 @@ package dev.catac.config;
 import dev.catac.api.PacketCost;
 import dev.catac.api.PacketCostClassifier;
 import dev.catac.api.PacketFloodHandler;
+
 import net.kyori.adventure.text.Component;
 import net.minestom.server.entity.Player;
 import net.minestom.server.network.packet.client.ClientPacket;
@@ -17,8 +18,8 @@ import java.time.Duration;
 import java.util.Objects;
 
 /**
- * Per-player packet budgets. Unknown/custom packets are NORMAL by default so
- * a host only needs to classify packets which it knows are unusually costly.
+ * Per-player packet budgets. Unknown/custom packets are NORMAL by default so a host only needs to
+ * classify packets which it knows are unusually costly.
  */
 public record PacketFloodPolicy(
         boolean enabled,
@@ -28,9 +29,49 @@ public record PacketFloodPolicy(
         Duration strikeWindow,
         PacketCostClassifier classifier,
         PacketFloodHandler handler,
-        Component kickMessage
-) {
+        Component kickMessage,
+        boolean kickEnabled,
+        Duration notificationCooldown) {
+    public PacketFloodPolicy(
+            boolean enabled,
+            PacketBudget total,
+            PacketBudget heavy,
+            int strikes,
+            Duration window,
+            PacketCostClassifier classifier,
+            PacketFloodHandler handler,
+            Component message) {
+        this(
+                enabled,
+                total,
+                heavy,
+                strikes,
+                window,
+                classifier,
+                handler,
+                message,
+                false,
+                Duration.ofSeconds(1));
+    }
+
+    public PacketFloodPolicy withKicks(boolean enabled) {
+        return new PacketFloodPolicy(
+                this.enabled,
+                totalBudget,
+                heavyBudget,
+                strikesBeforeKick,
+                strikeWindow,
+                classifier,
+                handler,
+                kickMessage,
+                enabled,
+                notificationCooldown);
+    }
+
     public PacketFloodPolicy {
+        dev.catac.state.TimeWindow.checkedNanos(strikeWindow);
+        if (dev.catac.state.TimeWindow.checkedNanos(notificationCooldown) == 0)
+            throw new IllegalArgumentException("notification cooldown must be positive");
         Objects.requireNonNull(totalBudget, "totalBudget");
         Objects.requireNonNull(heavyBudget, "heavyBudget");
         if (strikesBeforeKick < 1 || strikesBeforeKick > 100) {
@@ -46,22 +87,38 @@ public record PacketFloodPolicy(
     }
 
     public static PacketFloodPolicy defaults() {
-        return new PacketFloodPolicy(true, new PacketBudget(160, 240), new PacketBudget(24, 40),
-                8, Duration.ofSeconds(3), PacketFloodPolicy::defaultCost, PacketFloodHandler.NOOP,
+        return new PacketFloodPolicy(
+                true,
+                new PacketBudget(160, 240),
+                new PacketBudget(24, 40),
+                8,
+                Duration.ofSeconds(3),
+                PacketFloodPolicy::defaultCost,
+                PacketFloodHandler.NOOP,
                 Component.text("Too many packets were received."));
     }
 
     public static PacketFloodPolicy disabled() {
         PacketFloodPolicy defaults = defaults();
-        return new PacketFloodPolicy(false, defaults.totalBudget, defaults.heavyBudget,
-                defaults.strikesBeforeKick, defaults.strikeWindow, defaults.classifier, defaults.handler,
+        return new PacketFloodPolicy(
+                false,
+                defaults.totalBudget,
+                defaults.heavyBudget,
+                defaults.strikesBeforeKick,
+                defaults.strikeWindow,
+                defaults.classifier,
+                defaults.handler,
                 defaults.kickMessage);
     }
 
     private static PacketCost defaultCost(Player player, ClientPacket packet) {
-        return packet instanceof ClientClickWindowPacket || packet instanceof ClientCreativeInventoryActionPacket ||
-                packet instanceof ClientEditBookPacket || packet instanceof ClientPluginMessagePacket ||
-                packet instanceof ClientTabCompletePacket || packet instanceof ClientUpdateSignPacket
-                ? PacketCost.HEAVY : PacketCost.NORMAL;
+        return packet instanceof ClientClickWindowPacket
+                        || packet instanceof ClientCreativeInventoryActionPacket
+                        || packet instanceof ClientEditBookPacket
+                        || packet instanceof ClientPluginMessagePacket
+                        || packet instanceof ClientTabCompletePacket
+                        || packet instanceof ClientUpdateSignPacket
+                ? PacketCost.HEAVY
+                : PacketCost.NORMAL;
     }
 }

@@ -1,0 +1,299 @@
+[
+  {
+    "group": "core",
+    "name": "dev.catac.CatACLifecycleTest",
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 1.158
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.check.CheckResultTest",
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.001
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.config.CatACConfigTest",
+    "tests": 8,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.007
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.config.CheckPolicyTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.001
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.config.DamageProtectionPolicyTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.002
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.config.PacketFloodPolicyTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.003
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.engine.EnforcementMetricsTest",
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.003
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.internal.CheckRegistryTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.006
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.internal.CombatGeometryTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.004
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.regression.AcceptanceRegressionTest",
+    "tests": 11,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.084
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.regression.ActionRegressionTest",
+    "tests": 13,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.101
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.regression.AuraDecoyRegressionTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.022
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.regression.CorpusAndModelTest",
+    "tests": 14,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.434
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.regression.FoundationRegressionTest",
+    "tests": 8,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.029
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.regression.FuzzAndConcurrencyTest",
+    "tests": 8,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.161
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.regression.GeometryRegressionTest",
+    "tests": 11,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.065
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.regression.NativeEngineRegressionTest",
+    "tests": 9,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.083
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.regression.NativePipelineBenchmarkTest",
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.135
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.state.AuraDecoyStateTest",
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.001
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.state.DamageGuardStateTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.002
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.state.LatencyTrackerTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.001
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.state.MovementPredictionTest",
+    "tests": 3,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.002
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.state.PacketFloodStateTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.002
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.state.PositionHistoryTest",
+    "tests": 3,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.002
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.state.SynchronizationRegressionTest",
+    "tests": 7,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.006
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.state.TeleportTrackerTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.002
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.state.VelocityTrackerTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.002
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.state.ViolationStateTest",
+    "tests": 3,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.002
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.testing.CalibrationAnalyzerTest",
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.002
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.testing.DeterministicClockTest",
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.001
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.testing.PacketFuzzerTest",
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.002
+  },
+  {
+    "group": "core",
+    "name": "dev.catac.testing.ReplayRunnerTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 0.003
+  },
+  {
+    "group": "consumer",
+    "name": "example.ConsumerTest",
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 1.184
+  }
+]

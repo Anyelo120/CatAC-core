@@ -1,35 +1,29 @@
 package dev.catac.internal;
 
 import dev.catac.state.CollisionSnapshot;
-import net.minestom.server.entity.GameMode;
-import net.minestom.server.entity.Player;
-import net.minestom.server.entity.metadata.LivingEntityMeta;
+
+import net.minestom.server.entity.*;
 import net.minestom.server.potion.PotionEffect;
 
+/** Geometry and uncertain physical media have different exemption scopes. */
 public final class MovementExemptions {
-    private MovementExemptions() {
+    private MovementExemptions() {}
+
+    public static boolean geometryBypass(Player p) {
+        return p.getGameMode() == GameMode.SPECTATOR;
     }
 
-    public static boolean physicalBypass(Player player, CollisionSnapshot collision) {
-        GameMode gameMode = player.getGameMode();
-        if (gameMode != GameMode.SURVIVAL && gameMode != GameMode.ADVENTURE) {
+    public static boolean physicalBypass(Player p, CollisionSnapshot c) {
+        if (p.getGameMode() != GameMode.SURVIVAL && p.getGameMode() != GameMode.ADVENTURE)
             return true;
-        }
-        if (player.isAllowFlying() || player.isFlying() || player.isFlyingWithElytra() ||
-                player.getVehicle() != null) {
+        if (p.isAllowFlying() || p.isFlying() || p.isFlyingWithElytra() || p.getVehicle() != null)
             return true;
-        }
-        // These vanilla mechanics either replace normal gravity or make the
-        // server-side motion envelope intentionally too broad to judge fairly.
-        if (player.hasEffect(PotionEffect.LEVITATION) || player.hasEffect(PotionEffect.SLOW_FALLING) ||
-                player.hasEffect(PotionEffect.DOLPHINS_GRACE)) {
-            return true;
-        }
-        LivingEntityMeta meta = player.getLivingEntityMeta();
-        if (meta != null && meta.isInRiptideSpinAttack()) {
-            return true;
-        }
-        return !collision.complete() || collision.touchingLiquid() ||
-                collision.touchingClimbable() || collision.touchingSlowBlock();
+        if (p.hasEffect(PotionEffect.DOLPHINS_GRACE)) return true;
+        var meta = p.getLivingEntityMeta();
+        if (meta != null && meta.isInRiptideSpinAttack()) return true;
+        return !c.complete()
+                || c.touchingLiquid()
+                || c.touchingClimbable()
+                || c.touchingSlowBlock();
     }
 }

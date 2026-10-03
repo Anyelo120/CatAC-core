@@ -1,43 +1,52 @@
 package dev.catac.state;
 
+import java.util.HashMap;
+import java.util.Map;
+
 public final class ExemptionState {
-    private long joinUntilNanos;
-    private long teleportUntilNanos;
-    private long velocityUntilNanos;
-    private long manualUntilNanos;
+    private final TimeWindow join = new TimeWindow(),
+            teleport = new TimeWindow(),
+            velocity = new TimeWindow(),
+            manual = new TimeWindow();
+    private final Map<String, TimeWindow> scoped = new HashMap<>();
 
-    public ExemptionState(long nowNanos, long joinGraceNanos) {
-        this.joinUntilNanos = saturatingAdd(nowNanos, joinGraceNanos);
+    public ExemptionState(long now, long grace) {
+        join.open(now, grace);
     }
 
-    public void markTeleport(long nowNanos, long graceNanos) {
-        teleportUntilNanos = Math.max(teleportUntilNanos, saturatingAdd(nowNanos, graceNanos));
+    public void markTeleport(long now, long duration) {
+        teleport.open(now, duration);
     }
 
-    public void markVelocity(long nowNanos, long graceNanos) {
-        velocityUntilNanos = Math.max(velocityUntilNanos, saturatingAdd(nowNanos, graceNanos));
+    public void markVelocity(long now, long duration) {
+        velocity.open(now, duration);
     }
 
-    public void markManual(long nowNanos, long durationNanos) {
-        manualUntilNanos = Math.max(manualUntilNanos, saturatingAdd(nowNanos, durationNanos));
+    public void markManual(long now, long duration) {
+        manual.open(now, duration);
     }
 
-    public boolean movementExempt(long nowNanos) {
-        return nowNanos < joinUntilNanos || nowNanos < teleportUntilNanos ||
-                nowNanos < velocityUntilNanos || nowNanos < manualUntilNanos;
-    }
-
-    public boolean manualExempt(long nowNanos) {
-        return nowNanos < manualUntilNanos;
-    }
-
-    private static long saturatingAdd(long value, long amount) {
-        if (amount <= 0) {
-            return value;
+    public void markScoped(String checkId, long now, long duration) {
+        if (!scoped.containsKey(checkId) && scoped.size() >= 64) {
+            scoped.entrySet().removeIf(e -> !e.getValue().active(now));
+            if (scoped.size() >= 64) throw new IllegalStateException("Too many scoped exemptions");
         }
-        if (Long.MAX_VALUE - value < amount) {
-            return Long.MAX_VALUE;
-        }
-        return value + amount;
+        scoped.computeIfAbsent(checkId, k -> new TimeWindow()).open(now, duration);
+    }
+
+    public boolean movementExempt(long now) {
+        return join.active(now)
+                || teleport.active(now)
+                || velocity.active(now)
+                || manual.active(now);
+    }
+
+    public boolean manualExempt(long now) {
+        return manual.active(now);
+    }
+
+    public boolean scopedExempt(String id, long now) {
+        TimeWindow w = scoped.get(id);
+        return w != null && w.active(now);
     }
 }

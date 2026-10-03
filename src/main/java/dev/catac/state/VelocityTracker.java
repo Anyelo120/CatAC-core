@@ -1,68 +1,88 @@
 package dev.catac.state;
 
-/** Bounded queue of velocity updates awaiting a later client Pong. */
+import net.minestom.server.coordinate.Vec;
+
+/** Bounded, acknowledged velocity vectors in protocol units: blocks/tick. */
 final class VelocityTracker {
-    private static final int MAX_PENDING = 8;
-    private final int[] acknowledgementIds = new int[MAX_PENDING];
-    private final long[] deadlines = new long[MAX_PENDING];
-    private int writeIndex;
-    private final long timeoutNanos;
+    private static final int CAPACITY = 8;
+    private final int[] ids = new int[CAPACITY];
+    private final long[] time = new long[CAPACITY];
+    private final Vec[] vectors = new Vec[CAPACITY];
+    private final long timeout;
+    private int next;
+    private long timeouts, overwritten;
+    private Vec acknowledged = Vec.ZERO;
+    private boolean fresh;
 
-    VelocityTracker(long timeoutNanos) {
-        this.timeoutNanos = timeoutNanos;
-        java.util.Arrays.fill(acknowledgementIds, LatencyTracker.NO_PROBE);
+    VelocityTracker(long timeout) {
+        this.timeout = timeout;
+        java.util.Arrays.fill(ids, LatencyTracker.NO_PROBE);
     }
 
-    void markVelocity(long nowNanos) {
-        acknowledgementIds[writeIndex] = -1;
-        deadlines[writeIndex] = nowNanos + timeoutNanos;
-        writeIndex = (writeIndex + 1) % MAX_PENDING;
+    void markVelocity(long now) {
+        markVelocity(Vec.ZERO, now);
     }
 
-    boolean hasUnarmed(long nowNanos) {
-        expire(nowNanos);
-        for (int id : acknowledgementIds) {
-            if (id == -1) {
-                return true;
-            }
-        }
+    void markVelocity(Vec vector, long now) {
+        expire(now);
+        if (ids[next] != LatencyTracker.NO_PROBE) overwritten++;
+        ids[next] = -1;
+        time[next] = now;
+        vectors[next] = vector;
+        next = (next + 1) % CAPACITY;
+    }
+
+    boolean hasUnarmed(long now) {
+        expire(now);
+        for (int id : ids) if (id == -1) return true;
         return false;
     }
 
-    void arm(int probeId, long nowNanos) {
-        expire(nowNanos);
-        for (int index = 0; index < MAX_PENDING; index++) {
-            if (acknowledgementIds[index] == -1) {
-                acknowledgementIds[index] = probeId;
+    void arm(int probe, long now) {
+        expire(now);
+        for (int i = 0; i < CAPACITY; i++) if (ids[i] == -1) ids[i] = probe;
+    }
+
+    void acknowledge(int probe, long now) {
+        expire(now);
+        for (int n = 0; n < CAPACITY; n++) {
+            int i = (next + n) % CAPACITY;
+            if (ids[i] == probe) {
+                acknowledged = vectors[i];
+                fresh = true;
+                ids[i] = LatencyTracker.NO_PROBE;
+                vectors[i] = null;
             }
         }
     }
 
-    void acknowledge(int probeId, long nowNanos) {
-        for (int index = 0; index < MAX_PENDING; index++) {
-            if (acknowledgementIds[index] == probeId) {
-                acknowledgementIds[index] = LatencyTracker.NO_PROBE;
-            }
-        }
-        expire(nowNanos);
+    Vec consumeAcknowledged() {
+        if (!fresh) return null;
+        fresh = false;
+        return acknowledged;
     }
 
-    int pendingCount(long nowNanos) {
-        expire(nowNanos);
+    int pendingCount(long now) {
+        expire(now);
         int count = 0;
-        for (int id : acknowledgementIds) {
-            if (id != LatencyTracker.NO_PROBE) {
-                count++;
-            }
-        }
+        for (int id : ids) if (id != LatencyTracker.NO_PROBE) count++;
         return count;
     }
 
-    private void expire(long nowNanos) {
-        for (int index = 0; index < MAX_PENDING; index++) {
-            if (acknowledgementIds[index] != LatencyTracker.NO_PROBE && nowNanos > deadlines[index]) {
-                acknowledgementIds[index] = LatencyTracker.NO_PROBE;
+    long timeouts() {
+        return timeouts;
+    }
+
+    long overwritten() {
+        return overwritten;
+    }
+
+    private void expire(long now) {
+        for (int i = 0; i < CAPACITY; i++)
+            if (ids[i] != LatencyTracker.NO_PROBE && now - time[i] >= timeout) {
+                ids[i] = LatencyTracker.NO_PROBE;
+                vectors[i] = null;
+                timeouts++;
             }
-        }
     }
 }
